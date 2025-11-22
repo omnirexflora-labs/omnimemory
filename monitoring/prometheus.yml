@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'omnimemory'
+    static_configs:
+      # Scrape metrics from OmniMemory app running locally
+      # Port is configurable via OMNIMEMORY_METRICS_PORT (default: 9001)
+      # Update this target if you change the port in .env
+      - targets: ["host.docker.internal:9001"]
+    scrape_interval: 15s
+    metrics_path: /metrics
