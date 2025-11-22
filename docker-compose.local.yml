@@ -1,0 +1,149 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    container_name: omnimemory-qdrant-local
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__STORAGE__OPTIMIZERS__DELETED_THRESHOLD=0.2
+      - QDRANT__STORAGE__OPTIMIZERS__VACUUM_MIN_VECTOR_NUMBER=1000
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:6333/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    networks:
+      - omnimemory-local
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnimemory-api-local
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      # Qdrant connection (overrides .env if needed)
+      - OMNI_MEMORY_PROVIDER=qdrant-remote
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+
+      
+      # Essential LLM Configuration (must be set in .env)
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.4}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-3000}
+      - LLM_TOP_P=${LLM_TOP_P:-0.9}
+      
+      # Essential Embedding Configuration (must be set in .env)
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - EMBEDDING_ENCODING_FORMAT=${EMBEDDING_ENCODING_FORMAT:-base64}
+      - EMBEDDING_TIMEOUT=${EMBEDDING_TIMEOUT:-600}
+
+      # logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-./logs}
+      
+      
+      # OmniMemory Hyperparameters (tunable via .env)
+      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-30}
+      - OMNIMEMORY_RECALL_THRESHOLD=${OMNIMEMORY_RECALL_THRESHOLD:-0.3}
+      - OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=${OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD:-0.4}
+      - OMNIMEMORY_DEFAULT_N_RESULTS=${OMNIMEMORY_DEFAULT_N_RESULTS:-10}
+      - OMNIMEMORY_LINK_THRESHOLD=${OMNIMEMORY_LINK_THRESHOLD:-0.8}
+      - OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS=${OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS:-10}
+      
+      # Metrics & Observability (optional, disabled by default)
+      - OMNIMEMORY_ENABLE_METRICS_SERVER=${OMNIMEMORY_ENABLE_METRICS_SERVER:-false}
+      - OMNIMEMORY_METRICS_PORT=${OMNIMEMORY_METRICS_PORT:-9001}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - omnimemory-local
+
+  # Optional: Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: omnimemory-prometheus-local
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - omnimemory-local
+    profiles:
+      - monitoring  # Only start with --profile monitoring
+
+  # Optional: Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:12.2.1
+    container_name: omnimemory-grafana-local
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - omnimemory-local
+    profiles:
+      - monitoring  # Only start with --profile monitoring
+
+volumes:
+  qdrant_storage:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  omnimemory-local:
+    driver: bridge
