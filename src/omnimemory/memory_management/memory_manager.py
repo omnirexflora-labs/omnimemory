@@ -1,39 +1,54 @@
-import json
-import re
 import asyncio
+import json
 import time
-from datetime import datetime, timezone
 import uuid
-from typing import List, Any, Callable, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
-from omnimemory.core.logger_utils import get_logger
-from omnimemory.core.system_prompts import (
-    episodic_memory_constructor_system_prompt,
-    summarizer_memory_constructor_system_prompt,
-    fast_conversation_summary_prompt,
+from datetime import datetime, timezone
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
 )
-from omnimemory.core.utils import (
-    calculate_composite_score,
-    calculate_recency_score,
-    calculate_importance_score,
-    determine_relationship_type,
-    create_zettelkasten_memory_note,
-    prepare_memory_for_storage,
-    fuzzy_dedup,
-    clean_and_parse_json,
-)
+
+from omnimemory.core.agents import ConflictResolutionAgent, SynthesisAgent
 from omnimemory.core.config import (
-    DEFAULT_N_RESULTS,
-    RECALL_THRESHOLD,
-    LINK_THRESHOLD,
     COMPOSITE_SCORE_THRESHOLD,
+    DEFAULT_N_RESULTS,
+    LINK_THRESHOLD,
+    RECALL_THRESHOLD,
     VECTOR_DB_MAX_CONNECTIONS,
 )
-from omnimemory.core.agents import ConflictResolutionAgent, SynthesisAgent
-from omnimemory.core.results import MemoryOperationResult, BatchOperationResult
+from omnimemory.core.llm import LLMConnection
+from omnimemory.core.logger_utils import get_logger
 from omnimemory.core.metrics import get_metrics_collector
+from omnimemory.core.results import BatchOperationResult, MemoryOperationResult
+from omnimemory.core.system_prompts import (
+    agent_memory_constructor_system_prompt,
+    episodic_memory_constructor_system_prompt,
+    fast_conversation_summary_prompt,
+    summarizer_memory_constructor_system_prompt,
+)
+from omnimemory.core.types import MemoryDataDict, MemoryNoteData
+from omnimemory.core.utils import (
+    calculate_composite_score,
+    calculate_importance_score,
+    calculate_recency_score,
+    clean_and_parse_json,
+    create_zettelkasten_memory_note,
+    determine_relationship_type,
+    fuzzy_dedup,
+    prepare_memory_for_storage,
+    prepare_agent_memory_for_storage,
+    create_agent_memory_note,
+)
 from .connection_pool import VectorDBHandlerPool
-from omnimemory.core.types import MemoryNoteData, MemoryDataDict
+
+if TYPE_CHECKING:
+    from omnimemory.memory_management.vector_db_base import VectorDBBase
 
 logger = get_logger(name="omnimemory.memory_management.memory_manager")
 
@@ -47,25 +62,40 @@ _DEFAULT_STATUS_CHUNK_SIZE = 10
 
 
 class MemoryManager:
-    """Memory management operations."""
+    """
+    Memory management operations.
 
-    def __init__(self, llm_connection: Callable):
-        """Initialize memory manager with automatic vector database setup.
+    Handles creation, storage, retrieval, and management of episodic and semantic memories
+    using vector database backends with connection pooling.
+    """
+
+    def __init__(self, llm_connection: LLMConnection) -> None:
+        """
+        Initialize memory manager with automatic vector database setup.
 
         Args:
             llm_connection: LLM connection for embeddings (required)
         """
-        self.llm_connection = llm_connection
-        self.connection_pool = VectorDBHandlerPool.get_instance(
+        self.llm_connection: LLMConnection = llm_connection
+        self.connection_pool: VectorDBHandlerPool = VectorDBHandlerPool.get_instance(
             max_connections=VECTOR_DB_MAX_CONNECTIONS
         )
 
-        self.conflict_resolution_agent = ConflictResolutionAgent(llm_connection)
-        self.synthesis_agent = SynthesisAgent(llm_connection)
+        self.conflict_resolution_agent: ConflictResolutionAgent = (
+            ConflictResolutionAgent(llm_connection)
+        )
+        self.synthesis_agent: SynthesisAgent = SynthesisAgent(llm_connection)
 
     @asynccontextmanager
-    async def _get_pooled_handler(self):
-        """Get a handler from the connection pool."""
+    async def _get_pooled_handler(
+        self,
+    ) -> AsyncGenerator["VectorDBBase", None]:
+        """
+        Get a handler from the connection pool.
+
+        Yields:
+            VectorDBBase: A vector database handler from the pool.
+        """
         async with self.connection_pool.get_handler(
             self.llm_connection
         ) as vector_db_handler:
@@ -85,9 +115,18 @@ class MemoryManager:
             return False
 
     async def create_episodic_memory(
-        self, message: str, llm_connection: Callable
+        self, message: str, llm_connection: LLMConnection
     ) -> Optional[str]:
-        """Create an episodic memory from a conversation."""
+        """
+        Create an episodic memory from a conversation.
+
+        Args:
+            message: Conversation message to convert to episodic memory.
+            llm_connection: LLM connection for generating the memory.
+
+        Returns:
+            Generated episodic memory content, or None if generation fails.
+        """
         try:
             llm_messages = [
                 {
@@ -100,16 +139,25 @@ class MemoryManager:
             response = await llm_connection.llm_call(messages=llm_messages)
             if response and response.choices:
                 content = response.choices[0].message.content
-                return content
+                return content  # type: ignore[no-any-return]
             return None
         except Exception as e:
             logger.error(f"Error creating episodic memory: {e}")
             return None
 
     async def create_summarizer_memory(
-        self, message: str, llm_connection: Callable
+        self, message: str, llm_connection: Any
     ) -> Optional[str]:
-        """Create a summarizer memory from a conversation."""
+        """
+        Create a summarizer memory from a conversation.
+
+        Args:
+            message: Conversation message to convert to summarizer memory.
+            llm_connection: LLM connection for generating the memory.
+
+        Returns:
+            Generated summarizer memory content, or None if generation fails.
+        """
         try:
             llm_messages = [
                 {
@@ -122,10 +170,41 @@ class MemoryManager:
             response = await llm_connection.llm_call(messages=llm_messages)
             if response and response.choices:
                 content = response.choices[0].message.content
-                return content
+                return content  # type: ignore[no-any-return]
             return None
         except Exception as e:
             logger.error(f"Error creating summarizer memory: {e}")
+            return None
+
+    async def _generate_add_agent_memory(
+        self, message: str, llm_connection: Any
+    ) -> Optional[str]:
+        """
+        Create a agent memory from a conversation.
+
+        Args:
+            message: Conversation message to convert to agent memory.
+            llm_connection: LLM connection for generating the memory.
+
+        Returns:
+            Generated agent memory content, or None if generation fails.
+        """
+        try:
+            llm_messages = [
+                {
+                    "role": "system",
+                    "content": agent_memory_constructor_system_prompt,
+                },
+                {"role": "user", "content": message},
+            ]
+
+            response = await llm_connection.llm_call(messages=llm_messages)
+            if response and response.choices:
+                content = response.choices[0].message.content
+                return content  # type: ignore[no-any-return]
+            return None
+        except Exception as e:
+            logger.error(f"Error creating agent memory: {e}")
             return None
 
     async def generate_conversation_summary(
@@ -134,15 +213,26 @@ class MemoryManager:
         user_id: str,
         session_id: Optional[str],
         messages: str,
-        llm_connection: Callable,
+        llm_connection: LLMConnection,
         use_fast_path: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate conversation summary.
 
         Args:
+            app_id: Application identifier.
+            user_id: User identifier.
+            session_id: Optional session identifier.
+            messages: Conversation messages to summarize.
+            llm_connection: LLM connection for generating the summary.
             use_fast_path: If True, use simple text-only summary (faster, no metadata).
                           If False, use full structured summary with metadata (slower).
+
+        Returns:
+            Dictionary containing the generated summary and metadata.
+
+        Raises:
+            Exception: If summary generation fails.
         """
         start_time = time.time()
         metrics = get_metrics_collector()
@@ -190,9 +280,25 @@ class MemoryManager:
         user_id: str,
         session_id: Optional[str],
         messages: str,
-        llm_connection: Callable,
+        llm_connection: LLMConnection,
     ) -> Dict[str, Any]:
-        """Generate a simple text-only summary (fast path)."""
+        """
+        Generate a simple text-only summary (fast path).
+
+        Args:
+            app_id: Application identifier.
+            user_id: User identifier.
+            session_id: Optional session identifier.
+            messages: Conversation messages to summarize.
+            llm_connection: LLM connection for generating the summary.
+
+        Returns:
+            Dictionary containing the summary and metadata.
+
+        Raises:
+            ValueError: If LLM returns no response.
+            Exception: If summary generation fails.
+        """
         try:
             llm_messages = [
                 {"role": "system", "content": fast_conversation_summary_prompt},
@@ -221,8 +327,8 @@ class MemoryManager:
         app_id: str,
         user_id: str,
         session_id: Optional[str],
-        messages: str | List[Dict[str, Any]],
-        llm_connection: Callable,
+        messages: str,
+        llm_connection: LLMConnection,
     ) -> MemoryOperationResult:
         """
         Create and store a memory from agent messages.
@@ -234,7 +340,7 @@ class MemoryManager:
             app_id: Application ID
             user_id: User ID
             session_id: Optional session ID
-            messages: Messages content (string or list of message objects)
+            messages: Formatted message string (already formatted by SDK)
             llm_connection: LLM connection for summary generation
 
         Returns:
@@ -248,31 +354,29 @@ class MemoryManager:
         )
 
         try:
-            if isinstance(messages, list):
-                formatted_parts = []
-                for msg in messages:
-                    if isinstance(msg, dict):
-                        role = msg.get("role", "unknown")
-                        content = msg.get("content", "")
-                        timestamp = msg.get("timestamp", "")
-                        formatted_parts.append(f"[{timestamp}] {role}: {content}")
-                    else:
-                        formatted_parts.append(str(msg))
-                message_text = "\n".join(formatted_parts)
-            else:
-                message_text = str(messages)
-
-            summary_result = await self._generate_fast_summary(
-                app_id=app_id,
-                user_id=user_id,
-                session_id=session_id,
-                messages=message_text,
+            agent_memory_result = await self._generate_add_agent_memory(
+                message=messages,
                 llm_connection=llm_connection,
             )
-            summary_text = summary_result["summary"]
+            if not agent_memory_result:
+                return MemoryOperationResult.error_result(
+                    error_code="GENERATION_FAILED",
+                    error_message="Failed to generate agent memory content",
+                    collection_name=app_id,
+                )
 
+            agent_memory_data = clean_and_parse_json(agent_memory_result)
+            agent_memory_text = create_agent_memory_note(agent_memory_data)
+            agent_memory_data_storage = prepare_agent_memory_for_storage(
+                note_text=agent_memory_text,
+                agent_data=agent_memory_data,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            metadata = agent_memory_data_storage.get("metadata") or {}
+            logger.info(f"agent memory data old: {agent_memory_data}")
+            logger.info(f"Agent memory data: {agent_memory_data_storage}")
             try:
-                embedding = await self.embed_memory_note(summary_text)
+                embedding = await self.embed_memory_note(agent_memory_text)
                 if not embedding:
                     duration = time.time() - start_time
                     metrics.record_write(
@@ -307,14 +411,20 @@ class MemoryManager:
                 app_id=app_id,
                 user_id=user_id,
                 session_id=session_id,
-                memory_note_text=summary_text,
+                memory_note_text=agent_memory_text,
                 embedding=embedding,
-                tags=None,
-                keywords=None,
-                semantic_queries=None,
-                conversation_complexity=None,
-                interaction_quality=None,
-                follow_up_potential=None,
+                tags=metadata.get("tags", []),
+                keywords=metadata.get("keywords", []),
+                semantic_queries=metadata.get("query_hooks", []),
+                conversation_complexity=self._depth_to_complexity(
+                    metadata.get("content_depth")
+                ),
+                interaction_quality="High"
+                if metadata.get("interaction_quality")
+                else None,
+                follow_up_potential=agent_memory_data_storage.get(
+                    "follow_up_areas", []
+                ),
                 status="active",
             )
 
@@ -352,9 +462,25 @@ class MemoryManager:
         user_id: str,
         session_id: Optional[str],
         messages: str,
-        llm_connection: Callable,
+        llm_connection: LLMConnection,
     ) -> Dict[str, Any]:
-        """Generate full structured summary with metadata (slower path)."""
+        """
+        Generate full structured summary with metadata (slower path).
+
+        Args:
+            app_id: Application identifier.
+            user_id: User identifier.
+            session_id: Optional session identifier.
+            messages: Conversation messages to summarize.
+            llm_connection: LLM connection for generating the summary.
+
+        Returns:
+            Dictionary containing the summary and metadata.
+
+        Raises:
+            ValueError: If summarizer agent returns no content or invalid structure.
+            Exception: If summary generation or parsing fails.
+        """
         raw_summary = await self.create_summarizer_memory(messages, llm_connection)
         if not raw_summary:
             raise ValueError("Summarizer agent returned no content")
@@ -382,9 +508,18 @@ class MemoryManager:
         }
 
     async def create_combined_memory(
-        self, message: str, llm_connection: Callable
+        self, message: str, llm_connection: LLMConnection
     ) -> Optional[str]:
-        """Create a combined memory note by running both episodic and summarizer constructors in parallel and merging results."""
+        """
+        Create a combined memory note by running both episodic and summarizer constructors in parallel and merging results.
+
+        Args:
+            message: Conversation message to convert to combined memory.
+            llm_connection: LLM connection for generating the memory.
+
+        Returns:
+            Combined memory note text, or None if generation fails.
+        """
         try:
             logger.info("Starting parallel memory creation using asyncio.gather")
 
@@ -430,13 +565,13 @@ class MemoryManager:
         self,
         app_id: str,
         query: str,
-        n_results: int = None,
-        user_id: str = None,
-        session_id: str = None,
-        similarity_threshold: float = None,
+        n_results: Optional[int] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        similarity_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Query memory with intelligent multi-dimensional ranking (async version).
+        Query memory with intelligent multi-dimensional ranking .
 
         Performs semantic search with composite scoring combining relevance, recency, and importance.
         Uses multiplicative approach: composite = relevance × (1 + recency_boost + importance_boost)
@@ -508,7 +643,7 @@ class MemoryManager:
 
     async def _execute_query(
         self,
-        vector_db_handler,
+        vector_db_handler: "VectorDBBase",
         collection_name: str,
         query: str,
         filter_conditions: Dict[str, Any],
@@ -516,7 +651,21 @@ class MemoryManager:
         similarity_threshold: float,
         n_results: int,
     ) -> List[Dict[str, Any]]:
-        """Execute the actual query (extracted for reuse with pool) - async version."""
+        """
+        Execute the actual query (extracted for reuse with pool) - async version.
+
+        Args:
+            vector_db_handler: Vector database handler instance.
+            collection_name: Name of the collection to query.
+            query: Natural language query string.
+            filter_conditions: Dictionary of metadata filters.
+            expanded_n_results: Expanded number of results to retrieve.
+            similarity_threshold: Minimum similarity score threshold.
+            n_results: Final number of results to return.
+
+        Returns:
+            List of memory result dictionaries with composite scores.
+        """
         try:
             logger.info(
                 f"Querying with similarity_threshold={similarity_threshold}, "
@@ -646,7 +795,7 @@ class MemoryManager:
         doc_id: str,
         document: str,
         embedding: List[float],
-        metadata: dict,
+        metadata: Dict[str, Any],
     ) -> MemoryOperationResult:
         """Add memory to collection.
 
@@ -710,7 +859,7 @@ class MemoryManager:
         app_id: str,
     ) -> Optional[Dict[str, Any]]:
         """
-        Get a single memory by ID (async version).
+        Get a single memory by ID .
 
         Args:
             memory_id: Document ID of the memory to retrieve
@@ -865,7 +1014,6 @@ class MemoryManager:
             metadata = memory.get("metadata", {})
             status = metadata.get("status", "active")
             created_at = metadata.get("created_at", "")
-            next_id = metadata.get("next_id")
 
             if len(mem_id) > 16:
                 display_id = f"{mem_id[:8]}...{mem_id[-4:]}"
@@ -879,7 +1027,7 @@ class MemoryManager:
                         date_str = str(created_at).split("T")[0]
                     else:
                         date_str = str(created_at)[:10]
-                except:
+                except Exception:
                     date_str = ""
 
             status_emoji = {"active": "✅", "updated": "🔄", "deleted": "❌"}.get(
@@ -961,7 +1109,7 @@ class MemoryManager:
                 try:
                     if "T" in str(created_at):
                         dates.append(str(created_at).split("T")[0])
-                except:
+                except Exception:
                     pass
 
         time_span = ""
@@ -1001,7 +1149,7 @@ class MemoryManager:
                         if "T" in str(created_at)
                         else str(created_at)[:10]
                     )
-                except:
+                except Exception:
                     pass
             if updated_at:
                 try:
@@ -1010,7 +1158,7 @@ class MemoryManager:
                         if "T" in str(updated_at)
                         else str(updated_at)[:10]
                     )
-                except:
+                except Exception:
                     pass
 
             status_emoji = {"active": "✅", "updated": "🔄", "deleted": "❌"}.get(
@@ -1063,7 +1211,7 @@ class MemoryManager:
                 f"- This memory has evolved through **{total_memories - 1} consolidation(s)**"
             )
             lines.append(
-                f"- The chain represents the progressive refinement and enrichment of the original memory"
+                "- The chain represents the progressive refinement and enrichment of the original memory"
             )
             if updated_count > 0:
                 lines.append(
@@ -1120,7 +1268,7 @@ class MemoryManager:
                         if "T" in str(created_at)
                         else str(created_at)[:10]
                     )
-                except:
+                except Exception:
                     pass
 
             lines.append(f"{i + 1}. {display_id} ({status})")
@@ -1141,7 +1289,7 @@ class MemoryManager:
         """Generate JSON evolution report."""
         import json
 
-        report = {
+        report: Dict[str, Any] = {
             "summary": {
                 "total_memories": len(chain),
                 "active_count": sum(
@@ -1215,7 +1363,7 @@ class MemoryManager:
                         date_str = str(created_at).split("T")[0]
                     else:
                         date_str = str(created_at)[:10]
-                except:
+                except Exception:
                     date_str = ""
 
             order_num = i + 1
@@ -1330,7 +1478,7 @@ class MemoryManager:
         doc_id: str,
         collection_name: str,
     ) -> MemoryOperationResult:
-        """Delete a memory from collection with flexible filtering (async version).
+        """Delete a memory from collection with flexible filtering .
 
         Args:
             doc_id: Document ID to delete
@@ -1421,13 +1569,13 @@ class MemoryManager:
         self,
         embedding: List[float],
         app_id: str,
-        user_id: str = None,
-        session_id: str = None,
-        max_links: int = None,
-        similarity_threshold: float = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        max_links: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Generate semantic links to related existing memories (async version).
+        Generate semantic links to related existing memories .
 
         Before storing a new memory, this method finds semantically similar existing
         memories and creates "links" for memory networking. Used by conflict resolution
@@ -1458,6 +1606,11 @@ class MemoryManager:
                 if not max_links:
                     max_links = DEFAULT_N_RESULTS
                 n_results = max_links * 2
+                threshold = (
+                    similarity_threshold
+                    if similarity_threshold is not None
+                    else LINK_THRESHOLD
+                )
 
                 async with self._get_pooled_handler() as vector_db_handler:
                     if not vector_db_handler or not vector_db_handler.enabled:
@@ -1472,7 +1625,7 @@ class MemoryManager:
                         embedding=embedding,
                         n_results=n_results,
                         filter_conditions=filter_conditions,
-                        similarity_threshold=similarity_threshold,
+                        similarity_threshold=threshold,
                     )
 
                 if not candidates.get("documents"):
@@ -1491,7 +1644,7 @@ class MemoryManager:
                     logger.info(
                         f"Processing candidate {i} with score {score} and metadata {metadata}"
                     )
-                    if score >= similarity_threshold:
+                    if score >= threshold:
                         composite_score = calculate_composite_score(
                             semantic_score=score, metadata=metadata
                         )
@@ -1540,7 +1693,7 @@ class MemoryManager:
 
     async def embed_memory_note(self, memory_note_text: str) -> List[float]:
         """
-        Embed a memory note text and return the embedding vector (async version).
+        Embed a memory note text and return the embedding vector .
 
         This method handles the embedding of combined memory notes that have been
         created by merging episodic and summarizer memories.
@@ -1587,17 +1740,17 @@ class MemoryManager:
         user_id: str,
         memory_note_text: str,
         embedding: List[float],
-        session_id: str = None,
-        tags: List[str] = None,
-        keywords: List[str] = None,
-        semantic_queries: List[str] = None,
-        conversation_complexity: int = None,
-        interaction_quality: str = None,
-        follow_up_potential: List[str] = None,
+        session_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        keywords: Optional[List[str]] = None,
+        semantic_queries: Optional[List[str]] = None,
+        conversation_complexity: Optional[int] = None,
+        interaction_quality: Optional[str] = None,
+        follow_up_potential: Optional[List[str]] = None,
         status: str = "active",
     ) -> MemoryOperationResult:
         """
-        Store a complete memory note with embedding and comprehensive metadata (async version).
+        Store a complete memory note with embedding and comprehensive metadata .
 
         The memory note text is stored as the document content and will be available
         as 'text' field in the vector database payload for retrieval.
@@ -1769,9 +1922,9 @@ class MemoryManager:
         app_id: str,
         doc_id: str,
         new_status: str,
-        archive_reason: str = None,
-        caused_by_memory: str = None,
-        new_memory_id: str = None,
+        archive_reason: Optional[str] = None,
+        caused_by_memory: Optional[str] = None,
+        new_memory_id: Optional[str] = None,
     ) -> MemoryOperationResult:
         """
         Update the status of an existing memory using the simple status+reason approach.
@@ -1887,7 +2040,7 @@ class MemoryManager:
         self,
         app_id: str,
         doc_id: str,
-        timestamp: datetime = None,
+        timestamp: Optional[datetime] = None,
     ) -> MemoryOperationResult:
         """
         Update the timestamp of an existing memory (for SKIP operations) - simple approach.
@@ -1981,7 +2134,7 @@ class MemoryManager:
             return result
 
     async def _create_and_parse_memory_note(
-        self, messages: str, llm_connection: Callable
+        self, messages: str, llm_connection: LLMConnection
     ) -> Tuple[Optional[MemoryNoteData], Optional[str]]:
         """
         Create memory note from messages and parse JSON structure.
@@ -2057,7 +2210,7 @@ class MemoryManager:
         session_id: Optional[str],
     ) -> List[Dict[str, Any]]:
         """
-        Find semantic links for a memory embedding (async version).
+        Find semantic links for a memory embedding .
 
         Args:
             embedding: The embedding vector
@@ -2186,7 +2339,15 @@ class MemoryManager:
                         )
                     )
                 else:
-                    results.append(chunk_result)
+                    if isinstance(chunk_result, MemoryOperationResult):
+                        results.append(chunk_result)
+                    else:
+                        results.append(
+                            MemoryOperationResult.error_result(
+                                error_code="UNKNOWN_ERROR",
+                                error_message=str(chunk_result),
+                            )
+                        )
         return results
 
     async def _run_timestamp_updates_chunked(
@@ -2219,7 +2380,15 @@ class MemoryManager:
                         )
                     )
                 else:
-                    results.append(chunk_result)
+                    if isinstance(chunk_result, MemoryOperationResult):
+                        results.append(chunk_result)
+                    else:
+                        results.append(
+                            MemoryOperationResult.error_result(
+                                error_code="UNKNOWN_ERROR",
+                                error_message=str(chunk_result),
+                            )
+                        )
         return results
 
     async def _store_memory_directly(
@@ -2256,9 +2425,9 @@ class MemoryManager:
         memory_data: MemoryDataDict,
         meaningful_links: List[Dict[str, Any]],
         app_id: str,
-    ) -> bool:
+    ) -> Tuple[bool, List[Dict[str, Any]]]:
         """
-        Execute conflict resolution logic for memories with meaningful links (async version).
+        Execute conflict resolution logic for memories with meaningful links .
 
         Args:
             memory_data: New memory data dictionary
@@ -2415,7 +2584,7 @@ class MemoryManager:
         app_id: str,
         user_id: str,
         messages: str,
-        llm_connection: Callable,
+        llm_connection: LLMConnection,
         session_id: Optional[str] = None,
     ) -> MemoryOperationResult:
         """
@@ -2543,7 +2712,7 @@ class MemoryManager:
     async def _execute_batch_update(
         self,
         update_decisions: List[Dict[str, Any]],
-        new_memory_data: Dict[str, Any],
+        new_memory_data: MemoryDataDict,
         meaningful_links: List[Dict[str, Any]],
     ) -> BatchOperationResult:
         """Execute batch UPDATE operations: consolidate memories into new synthesized memory.
@@ -2848,9 +3017,9 @@ class MemoryManager:
     async def _execute_batch_delete(
         self,
         delete_decisions: List[Dict[str, Any]],
-        new_memory_data: Dict[str, Any],
+        new_memory_data: MemoryDataDict,
     ) -> BatchOperationResult:
-        """Execute batch DELETE operations: store new memory, archive contradicted ones (async version).
+        """Execute batch DELETE operations: store new memory, archive contradicted ones .
 
         NOTE: DOES store the new_memory_data directly as an "active" memory,
         then archives the contradicted memories as "deleted".
@@ -3011,7 +3180,7 @@ class MemoryManager:
         skip_decisions: List[Dict[str, Any]],
         app_id: str,
     ) -> BatchOperationResult:
-        """Execute batch SKIP operations: refresh timestamps on specified memories (async version)."""
+        """Execute batch SKIP operations: refresh timestamps on specified memories ."""
         import time
 
         metrics = get_metrics_collector()

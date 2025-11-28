@@ -2,12 +2,9 @@
 Comprehensive unit tests for OmniMemory logger utilities.
 """
 
-import pytest
 import logging
-import sys
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from omnimemory.core.logger_utils import OmniMemoryLogger, get_logger, logger
+from unittest.mock import patch
+from omnimemory.core.logger_utils import OmniMemoryLogger, get_logger
 
 
 class TestOmniMemoryLogger:
@@ -54,7 +51,7 @@ class TestOmniMemoryLogger:
     def test_init_create_log_directory(self):
         """Test create log directory if not exists."""
         with patch("pathlib.Path.mkdir") as mock_mkdir:
-            logger = OmniMemoryLogger(name="test")
+            OmniMemoryLogger(name="test")
             mock_mkdir.assert_called_with(parents=True, exist_ok=True)
 
     def test_init_generate_timestamped_log_file(self):
@@ -105,7 +102,7 @@ class TestOmniMemoryLogger:
     def test_setup_console_handler_rich(self):
         """Test setup console handler with Rich."""
         with patch("omnimemory.core.logger_utils.RICH_AVAILABLE", True):
-            with patch("omnimemory.core.logger_utils.RichHandler") as mock_rich:
+            with patch("omnimemory.core.logger_utils.RichHandler"):
                 logger = OmniMemoryLogger(name="test")
                 logger._setup_console_handler(use_rich=True)
                 assert logger.logger is not None
@@ -125,7 +122,7 @@ class TestOmniMemoryLogger:
     def test_setup_file_handler(self):
         """Test setup rotating file handler."""
         with patch("pathlib.Path.mkdir"):
-            with patch("logging.handlers.RotatingFileHandler") as mock_handler:
+            with patch("logging.handlers.RotatingFileHandler"):
                 logger = OmniMemoryLogger(name="test")
                 logger._setup_file_handler(max_bytes=1024, backup_count=3)
                 assert logger.logger is not None

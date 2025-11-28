@@ -1,37 +1,124 @@
+import asyncio
 import os
-from typing import Any, Union, List, Optional
-import time
 import random
+import time
+from functools import wraps
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+    cast,
+)
 
-from dotenv import load_dotenv
 import litellm
+
 from omnimemory.core.logger_utils import get_logger
 
 logger = get_logger(name="omnimemory.core.llm")
 
+FuncType = TypeVar("FuncType", bound=Callable[..., Any])
 
-def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60, backoff_factor=2):
-    """Retry decorator with exponential backoff and jitter.
+
+def retry_with_backoff(
+    max_retries: int = 3,
+    base_delay: float = 1,
+    max_delay: float = 60,
+    backoff_factor: float = 2,
+) -> Callable[[FuncType], FuncType]:
+    """
+    Retry decorator with exponential backoff and jitter.
 
     Args:
-        max_retries: Maximum number of retry attempts
-        base_delay: Initial delay in seconds
-        max_delay: Maximum delay in seconds
-        backoff_factor: Multiplier for delay increase
+        max_retries: Maximum number of retry attempts.
+        base_delay: Initial delay in seconds.
+        max_delay: Maximum delay in seconds.
+        backoff_factor: Multiplier for delay increase.
+
+    Returns:
+        Decorator that wraps callables with retry semantics.
     """
 
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            last_exception = None
+    def decorator(func: FuncType) -> FuncType:
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                last_exception: Optional[Exception] = None
+                async_func = cast(Callable[..., Awaitable[Any]], func)
+
+                for attempt in range(max_retries + 1):
+                    try:
+                        result = await async_func(*args, **kwargs)
+                        return result
+                    except Exception as exc:
+                        last_exception = exc
+                        error_msg = str(exc).lower()
+                        retryable = any(
+                            keyword in error_msg
+                            for keyword in [
+                                "rate limit",
+                                "rate_limit",
+                                "rpm",
+                                "tpm",
+                                "quota",
+                                "throttle",
+                                "too many requests",
+                                "429",
+                                "temporary",
+                                "timeout",
+                                "connection",
+                            ]
+                        )
+                        if retryable and attempt < max_retries:
+                            delay = min(
+                                base_delay * (backoff_factor**attempt), max_delay
+                            )
+                            jitter = random.uniform(0, 0.1 * delay)
+                            total_delay = delay + jitter
+                            logger.warning(
+                                "Retryable error on attempt %s/%s: %s",
+                                attempt + 1,
+                                max_retries + 1,
+                                exc,
+                            )
+                            logger.info("Retrying in %.2f seconds...", total_delay)
+                            await asyncio.sleep(total_delay)
+                            continue
+                        if retryable:
+                            logger.error(
+                                "Max retries (%s) exceeded. Last error: %s",
+                                max_retries,
+                                exc,
+                            )
+                        else:
+                            logger.error("Non-retryable error: %s", exc)
+                        break
+
+                if last_exception is None:
+                    raise RuntimeError("Retry loop exited without exception")
+                raise last_exception
+
+            return cast(FuncType, async_wrapper)
+
+        @wraps(func)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_exception: Optional[Exception] = None
+            sync_func = cast(Callable[..., Any], func)
 
             for attempt in range(max_retries + 1):
                 try:
-                    return func(*args, **kwargs)
-
-                except Exception as e:
-                    last_exception = e
-                    error_msg = str(e).lower()
-                    if any(
+                    result = sync_func(*args, **kwargs)
+                    return result
+                except Exception as exc:
+                    last_exception = exc
+                    error_msg = str(exc).lower()
+                    retryable = any(
                         keyword in error_msg
                         for keyword in [
                             "rate limit",
@@ -46,32 +133,35 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60, backoff_factor
                             "timeout",
                             "connection",
                         ]
-                    ):
-                        if attempt < max_retries:
-                            delay = min(
-                                base_delay * (backoff_factor**attempt), max_delay
-                            )
-                            jitter = random.uniform(0, 0.1 * delay)
-                            total_delay = delay + jitter
-
-                            logger.warning(
-                                f"Retryable error on attempt {attempt + 1}/{max_retries + 1}: {e}"
-                            )
-                            logger.info(f"Retrying in {total_delay:.2f} seconds...")
-
-                            time.sleep(total_delay)
-                            continue
-                        else:
-                            logger.error(
-                                f"Max retries ({max_retries}) exceeded. Last error: {e}"
-                            )
+                    )
+                    if retryable and attempt < max_retries:
+                        delay = min(base_delay * (backoff_factor**attempt), max_delay)
+                        jitter = random.uniform(0, 0.1 * delay)
+                        total_delay = delay + jitter
+                        logger.warning(
+                            "Retryable error on attempt %s/%s: %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            exc,
+                        )
+                        logger.info("Retrying in %.2f seconds...", total_delay)
+                        time.sleep(total_delay)
+                        continue
+                    if retryable:
+                        logger.error(
+                            "Max retries (%s) exceeded. Last error: %s",
+                            max_retries,
+                            exc,
+                        )
                     else:
-                        logger.error(f"Non-retryable error: {e}")
-                        break
+                        logger.error("Non-retryable error: %s", exc)
+                    break
 
+            if last_exception is None:
+                raise RuntimeError("Retry loop exited without exception")
             raise last_exception
 
-        return wrapper
+        return cast(FuncType, sync_wrapper)
 
     return decorator
 
@@ -79,20 +169,20 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60, backoff_factor
 class LLMConnection:
     """Manages LLM connections using LiteLLM with environment variable configuration."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize LLMConnection with environment variables."""
-        self.llm_config = None
-        self.embedding_config = None
+        self.llm_config: Optional[Dict[str, Any]] = None
+        self.embedding_config: Optional[Dict[str, Any]] = None
         self._load_llm_configuration()
         self._load_embedding_configuration()
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Return a readable string representation of the LLMConnection."""
         llm_status = "configured" if self.llm_config else "not configured"
         embedding_status = "configured" if self.embedding_config else "not configured"
         return f"LLMConnection(LLM={llm_status}, EMBEDDING={embedding_status})"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Return a detailed representation of the LLMConnection."""
         return self.__str__()
 
@@ -108,7 +198,7 @@ class LLMConnection:
         try:
             return int(value)
         except ValueError:
-            logger.warning(f"Invalid integer value for {key}: {value}")
+            logger.warning("Invalid integer value for %s: %s", key, value)
             return default
 
     def _get_env_float(
@@ -121,10 +211,10 @@ class LLMConnection:
         try:
             return float(value)
         except ValueError:
-            logger.warning(f"Invalid float value for {key}: {value}")
+            logger.warning("Invalid float value for %s: %s", key, value)
             return default
 
-    def _load_llm_configuration(self):
+    def _load_llm_configuration(self) -> None:
         """Load LLM configuration from environment variables."""
         llm_api_key = self._get_env("LLM_API_KEY")
         if not llm_api_key:
@@ -193,7 +283,7 @@ class LLMConnection:
             logger.error(f"Error loading LLM configuration: {e}")
             self.llm_config = None
 
-    def _load_embedding_configuration(self):
+    def _load_embedding_configuration(self) -> None:
         """Load Embedding configuration from environment variables."""
         embedding_api_key = self._get_env("EMBEDDING_API_KEY")
         if not embedding_api_key:
@@ -286,7 +376,7 @@ class LLMConnection:
             logger.error(f"Error loading embedding configuration: {e}")
             self.embedding_config = None
 
-    def _set_llm_api_key(self, provider: str, api_key: str):
+    def _set_llm_api_key(self, provider: str, api_key: str) -> None:
         """Set API key environment variable for LLM provider."""
         provider_key_map = {
             "openai": "OPENAI_API_KEY",
@@ -307,7 +397,7 @@ class LLMConnection:
         else:
             logger.warning(f"Unknown LLM provider: {provider}, API key not set")
 
-    def _set_embedding_api_key(self, provider: str, api_key: str):
+    def _set_embedding_api_key(self, provider: str, api_key: str) -> None:
         """Set API key environment variable for embedding provider."""
         provider_key_map = {
             "openai": "OPENAI_API_KEY",
@@ -336,12 +426,23 @@ class LLMConnection:
     @retry_with_backoff(max_retries=3, base_delay=1, max_delay=30)
     async def embedding_call(
         self,
-        input_text: Union[str, List[str]],
-        input_type: str = None,
-        metadata: dict = None,
-        user: str = None,
-    ):
-        """Call the embedding service using LiteLLM"""
+        input_text: Union[str, Sequence[str]],
+        input_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        user: Optional[str] = None,
+    ) -> Optional[Any]:
+        """
+        Call the embedding service using LiteLLM.
+
+        Args:
+            input_text: Text or batch of texts to embed.
+            input_type: Provider-specific input type hint.
+            metadata: Optional metadata forwarded to providers that support it.
+            user: Optional user identifier for auditing.
+
+        Returns:
+            Provider embedding response payload or None on failure.
+        """
         try:
             if not self.embedding_config:
                 logger.error("Embedding configuration not loaded")
@@ -396,19 +497,30 @@ class LLMConnection:
             return response
 
         except Exception as e:
-            error_message = f"Error calling embedding service with model {self.embedding_config.get('model')}: {e}"
+            model_name = (
+                self.embedding_config.get("model")
+                if self.embedding_config
+                else "unknown"
+            )
+            error_message = (
+                f"Error calling embedding service with model {model_name}: {e}"
+            )
             logger.error(error_message)
             return None
 
     @retry_with_backoff(max_retries=3, base_delay=1, max_delay=30)
     def embedding_call_sync(
         self,
-        input_text: Union[str, List[str]],
-        input_type: str = None,
-        metadata: dict = None,
-        user: str = None,
-    ):
-        """Synchronous call to the embedding service using LiteLLM"""
+        input_text: Union[str, Sequence[str]],
+        input_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        user: Optional[str] = None,
+    ) -> Optional[Any]:
+        """
+        Synchronous call to the embedding service using LiteLLM.
+
+        Args mirror embedding_call.
+        """
         try:
             if not self.embedding_config:
                 logger.error("Embedding configuration not loaded")
@@ -463,23 +575,30 @@ class LLMConnection:
             return response
 
         except Exception as e:
-            error_message = f"Error calling embedding service with model {self.embedding_config.get('model')}: {e}"
+            model_name = (
+                self.embedding_config.get("model")
+                if self.embedding_config
+                else "unknown"
+            )
+            error_message = (
+                f"Error calling embedding service with model {model_name}: {e}"
+            )
             logger.error(error_message)
             return None
 
     def is_embedding_available(self) -> bool:
-        """Check if embedding functionality is available (API key is set)"""
+        """Return True when embedding configuration and API key are available."""
         return (
             self._get_env("EMBEDDING_API_KEY") is not None
             and self.embedding_config is not None
         )
 
     def is_llm_available(self) -> bool:
-        """Check if LLM functionality is available (API key is set)"""
+        """Return True when chat completion configuration and API key exist."""
         return self._get_env("LLM_API_KEY") is not None and self.llm_config is not None
 
-    def to_dict(self, msg):
-        """Convert message to dictionary format."""
+    def to_dict(self, msg: Any) -> Any:
+        """Convert message to dictionary format for LiteLLM consumption."""
         if hasattr(msg, "model_dump"):
             msg_dict = msg.model_dump(exclude_none=True)
 
@@ -498,10 +617,19 @@ class LLMConnection:
     @retry_with_backoff(max_retries=3, base_delay=1, max_delay=30)
     async def llm_call(
         self,
-        messages: list[Any],
-        tools: list[dict[str, Any]] = None,
-    ):
-        """Call the LLM using LiteLLM"""
+        messages: Sequence[Any],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Any]:
+        """
+        Call the LLM using LiteLLM.
+
+        Args:
+            messages: Chat completion messages (dict or pydantic models).
+            tools: Optional tool definitions for tool-calling models.
+
+        Returns:
+            LiteLLM completion response or None when unavailable.
+        """
         try:
             if not self.llm_config:
                 logger.debug("LLM configuration not loaded, skipping LLM call")
@@ -537,19 +665,17 @@ class LLMConnection:
             return response
 
         except Exception as e:
-            error_message = (
-                f"Error calling LLM with model {self.llm_config.get('model')}: {e}"
-            )
+            error_message = f"Error calling LLM with model {self.llm_config.get('model') if self.llm_config else 'unknown'}: {e}"
             logger.error(error_message)
             return None
 
     @retry_with_backoff(max_retries=3, base_delay=1, max_delay=30)
     def llm_call_sync(
         self,
-        messages: list[Any],
-        tools: list[dict[str, Any]] = None,
-    ):
-        """Synchronous call to the LLM using LiteLLM"""
+        messages: Sequence[Any],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Any]:
+        """Synchronous variant of llm_call."""
         try:
             if not self.llm_config:
                 logger.debug("LLM configuration not loaded, skipping LLM call")
@@ -585,8 +711,6 @@ class LLMConnection:
             return response
 
         except Exception as e:
-            error_message = (
-                f"Error calling LLM with model {self.llm_config.get('model')}: {e}"
-            )
+            error_message = f"Error calling LLM with model {self.llm_config.get('model') if self.llm_config else 'unknown'}: {e}"
             logger.error(error_message)
             return None

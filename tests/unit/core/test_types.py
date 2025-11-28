@@ -2,7 +2,6 @@
 Unit tests for OmniMemory type definitions.
 """
 
-import pytest
 from omnimemory.core.types import MemoryNoteData, MemoryDataDict
 
 

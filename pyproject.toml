@@ -13,12 +13,12 @@ bump = true
 [project]
 name = "omnimemory"
 dynamic = ["version"]
-description = "OmniMemory - Advanced memory management system with vector database support and LLM-powered memory processing"
+description = "Advanced LLM-native memory orchestration with dual-agent synthesis, conflict-aware evolution, multi-tenant vector DB backends, and async SDK/API tooling."
 readme = "README.md"
 authors = [{ name = "Abiola Adeshina", email = "abiolaadedayo1993@gmail.com" }]
 requires-python = ">=3.10"
 
-keywords = ["memory", "vector-database", "llm", "embeddings", "chromadb", "qdrant", "mongodb"]
+keywords = ["memory", "vector-database", "llm", "embeddings", "chromadb", "qdrant", "mongodb", "pgvector", "ai", "multi-tenant"]
 license = { text = "MIT" }
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -32,10 +32,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "celery>=5.5.3",
-    "chromadb>=1.3.4",
+    "asyncpg>=0.29.0",
+    "chromadb>=1.3.5",
     "fastapi>=0.115.0",
     "litellm>=1.79.3",
+    "motor>=3.7.1",
     "prometheus-client>=0.23.1",
     "pydantic>=2.12.4",
     "pymongo>=4.15.4",
@@ -43,9 +44,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "qdrant-client>=1.15.1",
     "rapidfuzz>=3.14.3",
-    "redis>=7.0.1",
     "rich>=14.2.0",
-    "ruff>=0.14.4",
     "tiktoken>=0.12.0",
     "typer>=0.12.0",
     "uvicorn[standard]>=0.32.0",
@@ -87,6 +86,7 @@ dev = [
     "ruff>=0.11.7",
     "hatch>=1.14.1",
     "twine>=6.1.0",
+    "mypy>=1.11.0",
 ]
 
 [tool.coverage.run]
@@ -109,4 +109,56 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+show_error_context = true
+pretty = true
+ignore_missing_imports = false
+disable_error_code = ["import-untyped"]
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = [
+    "chromadb.*",
+    "qdrant_client.*",
+    "motor.*",
+    "pymongo.*",
+    "rapidfuzz.*",
+    "tiktoken.*",
+    "litellm.*",
+    "prometheus_client.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "omnimemory.*"
+warn_return_any = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+ignore_missing_imports = false
+follow_imports = "normal"
+
+[[tool.mypy.overrides]]
+module = [
+    "decouple.*",
+    "asyncpg.*",
+]
+ignore_missing_imports = true
 

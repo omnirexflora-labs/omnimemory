@@ -22,7 +22,7 @@ def reset_pool_state():
 
 def _patch_handler_factory(monkeypatch, handler):
     monkeypatch.setattr(
-        "omnimemory.memory_management.connection_pool.create_vector_db_handler",
+        "omnimemory.memory_management.connection_pool.VectorDBFactoryRegistry.create_from_env",
         AsyncMock(return_value=handler),
     )
 
@@ -38,7 +38,7 @@ async def test_create_handler_disabled_returns_none(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_handler_exception_returns_none(monkeypatch):
     monkeypatch.setattr(
-        "omnimemory.memory_management.connection_pool.create_vector_db_handler",
+        "omnimemory.memory_management.connection_pool.VectorDBFactoryRegistry.create_from_env",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     pool = VectorDBHandlerPool()
@@ -160,14 +160,14 @@ async def test_get_handler_exception_returning_handler_creates_replacement(monke
     replacement = Mock(enabled=True)
     factory = AsyncMock(side_effect=[handler, replacement])
     monkeypatch.setattr(
-        "omnimemory.memory_management.connection_pool.create_vector_db_handler",
+        "omnimemory.memory_management.connection_pool.VectorDBFactoryRegistry.create_from_env",
         factory,
     )
     pool = VectorDBHandlerPool(max_connections=1)
     await pool.initialize_pool(Mock())
 
-    original_wait_for = asyncio.wait_for
     call_tracker = {"count": 0}
+    original_wait_for = asyncio.wait_for
 
     async def flaky_wait_for(coro, timeout):
         if (
@@ -195,7 +195,7 @@ async def test_get_handler_exception_replacement_creation_fails(monkeypatch):
     handler = Mock(enabled=True)
     factory = AsyncMock(side_effect=[handler, RuntimeError("factory boom")])
     monkeypatch.setattr(
-        "omnimemory.memory_management.connection_pool.create_vector_db_handler",
+        "omnimemory.memory_management.connection_pool.VectorDBFactoryRegistry.create_from_env",
         factory,
     )
 
@@ -229,8 +229,6 @@ async def test_acquire_handler_creates_new_when_capacity_available(monkeypatch):
     pool._pool_lock = asyncio.Lock()
     pool._llm_connection = Mock()
     pool._initialized = True
-
-    original_wait_for = asyncio.wait_for
 
     async def fake_wait_for(coro, timeout):
         coro.close()

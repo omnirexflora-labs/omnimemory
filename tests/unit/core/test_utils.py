@@ -6,7 +6,7 @@ import pytest
 import json
 import time
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from omnimemory.core.utils import (
     get_tokenizer_for_model,
     count_tokens,
@@ -29,6 +29,8 @@ from omnimemory.core.utils import (
     _get_importance_weights,
     create_zettelkasten_memory_note,
     prepare_memory_for_storage,
+    create_agent_memory_note,
+    prepare_agent_memory_for_storage,
 )
 
 
@@ -657,17 +659,17 @@ class TestPrepareMemoryForStorage:
             clean_and_parse_json(json_str)
 
     def test_format_conversation_with_metadata_coverage_line_380(self):
-        """Test format_conversation with metadata (line 380)."""
+        """Test format_conversation ignores metadata (metadata no longer included)."""
         messages = [
             {
                 "role": "user",
                 "content": "test",
-                "timestamp": "2024-01-01T00:00:00Z",
                 "metadata": {"key": "value"},
             }
         ]
         result = format_conversation(messages)
-        assert "metadata" in result
+        assert "user: test" in result
+        assert "metadata" not in result
 
     def test_format_conversation_else_continue_coverage_line_380(self):
         """Test format_conversation else continue path (line 380)."""
@@ -738,6 +740,242 @@ class TestPrepareMemoryForStorage:
         result = determine_relationship_type(0.75, metadata)
         assert result == "related_technical"
 
+    def test_determine_relationship_type_complexity_fallback_coverage_line_562(self):
+        """Test determine_relationship_type with complexity default (line 562)."""
+        metadata = {}
+        result = determine_relationship_type(0.75, metadata)
+        assert result == "related_general"
+
+
+class TestAgentMemoryUtilities:
+    """Test cases for agent memory utility functions."""
+
+    def test_create_agent_memory_note_with_complete_data(self):
+        """Test create_agent_memory_note with complete agent data."""
+
+        agent_data = {
+            "narrative": "User prefers dark mode for better visibility",
+            "retrieval": {
+                "tags": ["preferences", "ui", "display"],
+                "keywords": ["dark mode", "theme", "interface"],
+            },
+            "metadata": {
+                "depth": "low",
+                "follow_ups": ["Check other UI preferences"],
+            },
+        }
+
+        result = create_agent_memory_note(agent_data)
+
+        assert "## Note" in result
+        assert "User prefers dark mode" in result
+        assert "Tags:" in result
+        assert "preferences" in result
+        assert "dark mode" in result
+        assert "depth: low" in result.lower()
+
+    def test_create_agent_memory_note_with_minimal_data(self):
+        """Test create_agent_memory_note with only narrative."""
+
+        agent_data = {"narrative": "Simple user note"}
+
+        result = create_agent_memory_note(agent_data)
+
+        assert "## Note" in result
+        assert "Simple user note" in result
+        assert isinstance(result, str)
+
+    def test_create_agent_memory_note_filters_na_values(self):
+        """Test create_agent_memory_note filters out N/A values."""
+
+        agent_data = {
+            "narrative": "User feedback",
+            "retrieval": {
+                "tags": ["valid", "N/A", "tag"],
+                "keywords": ["word", "N/A"],
+            },
+            "metadata": {
+                "depth": "medium",
+                "follow_ups": ["N/A"],
+            },
+        }
+
+        result = create_agent_memory_note(agent_data)
+
+        assert "N/A" not in result
+        assert "valid" in result
+        assert "tag" in result
+        assert "word" in result
+
+    def test_create_agent_memory_note_empty_metadata(self):
+        """Test create_agent_memory_note with empty metadata."""
+
+        agent_data = {
+            "narrative": "Test note",
+            "retrieval": {},
+            "metadata": {},
+        }
+
+        result = create_agent_memory_note(agent_data)
+
+        assert "## Note" in result
+        assert "Test note" in result
+
+    def test_create_agent_memory_note_missing_narrative(self):
+        """Test create_agent_memory_note with missing narrative."""
+
+        agent_data = {
+            "retrieval": {"tags": ["test"]},
+            "metadata": {"depth": "low"},
+        }
+
+        result = create_agent_memory_note(agent_data)
+
+        assert isinstance(result, str)
+        # Should still include footer
+        assert "Tags:" in result or "test" in result
+
+    def test_create_agent_memory_note_formatting(self):
+        """Test create_agent_memory_note output formatting."""
+
+        agent_data = {
+            "narrative": "Test content",
+            "retrieval": {"tags": ["tag1"], "keywords": ["kw1"]},
+            "metadata": {"depth": "high", "follow_ups": ["action"]},
+        }
+
+        result = create_agent_memory_note(agent_data)
+
+        # Check no excessive whitespace
+        assert "\n\n\n" not in result
+        assert "  " not in result or result.count("  ") < 3
+
+    def test_prepare_agent_memory_for_storage_complete_data(self):
+        """Test prepare_agent_memory_for_storage with complete data."""
+
+        note_text = "Formatted agent memory note"
+        agent_data = {
+            "retrieval": {
+                "tags": ["tag1", "tag2"],
+                "keywords": ["kw1", "kw2"],
+                "queries": ["query1", "query2"],
+            },
+            "metadata": {
+                "depth": "high",
+                "follow_ups": ["action1", "action2"],
+            },
+        }
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert result["text"] == note_text
+        assert "metadata" in result
+        assert result["metadata"]["tags"] == ["tag1", "tag2"]
+        assert result["metadata"]["keywords"] == ["kw1", "kw2"]
+        assert result["metadata"]["query_hooks"] == ["query1", "query2"]
+        assert result["metadata"]["content_depth"] == "high"
+        assert result["metadata"]["follow_up_areas"] == ["action1", "action2"]
+        assert result["metadata"]["source"] == "agent_memory"
+        assert "timestamp" in result["metadata"]
+
+    def test_prepare_agent_memory_for_storage_filters_na(self):
+        """Test prepare_agent_memory_for_storage filters N/A values."""
+
+        note_text = "Test note"
+        agent_data = {
+            "retrieval": {
+                "tags": ["valid", "N/A", "tag"],
+                "keywords": ["word1", "N/A"],
+                "queries": ["N/A", "query1"],
+            },
+            "metadata": {
+                "depth": "medium",
+                "follow_ups": ["N/A", "action1"],
+            },
+        }
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert "N/A" not in result["metadata"]["tags"]
+        assert "N/A" not in result["metadata"]["keywords"]
+        assert "N/A" not in result["metadata"]["query_hooks"]
+        assert "N/A" not in result["metadata"]["follow_up_areas"]
+        assert result["metadata"]["tags"] == ["valid", "tag"]
+        assert result["metadata"]["keywords"] == ["word1"]
+
+    def test_prepare_agent_memory_for_storage_default_depth(self):
+        """Test prepare_agent_memory_for_storage uses default depth."""
+
+        note_text = "Test"
+        agent_data = {"retrieval": {}, "metadata": {}}
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert result["metadata"]["content_depth"] == "medium"
+
+    def test_prepare_agent_memory_for_storage_custom_timestamp(self):
+        """Test prepare_agent_memory_for_storage with custom timestamp."""
+
+        note_text = "Test"
+        agent_data = {"retrieval": {}, "metadata": {}}
+        custom_time = "2024-01-01T00:00:00Z"
+
+        result = prepare_agent_memory_for_storage(
+            note_text, agent_data, timestamp=custom_time
+        )
+
+        assert result["metadata"]["timestamp"] == custom_time
+
+    def test_prepare_agent_memory_for_storage_auto_timestamp(self):
+        """Test prepare_agent_memory_for_storage generates timestamp if not provided."""
+
+        note_text = "Test"
+        agent_data = {"retrieval": {}, "metadata": {}}
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert "timestamp" in result["metadata"]
+        assert isinstance(result["metadata"]["timestamp"], str)
+        # Should be valid ISO format
+        assert "T" in result["metadata"]["timestamp"]
+
+    def test_prepare_agent_memory_for_storage_empty_lists(self):
+        """Test prepare_agent_memory_for_storage with empty arrays."""
+
+        note_text = "Test"
+        agent_data = {
+            "retrieval": {
+                "tags": [],
+                "keywords": [],
+                "queries": [],
+            },
+            "metadata": {
+                "follow_ups": [],
+            },
+        }
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert result["metadata"]["tags"] == []
+        assert result["metadata"]["keywords"] == []
+        assert result["metadata"]["query_hooks"] == []
+        assert result["metadata"]["follow_up_areas"] == []
+
+    def test_prepare_agent_memory_for_storage_missing_keys(self):
+        """Test prepare_agent_memory_for_storage handles missing keys gracefully."""
+
+        note_text = "Test"
+        agent_data = {}
+
+        result = prepare_agent_memory_for_storage(note_text, agent_data)
+
+        assert result["text"] == note_text
+        assert result["metadata"]["tags"] == []
+        assert result["metadata"]["keywords"] == []
+        assert result["metadata"]["query_hooks"] == []
+        assert result["metadata"]["content_depth"] == "medium"
+        assert result["metadata"]["source"] == "agent_memory"
+
     def test_determine_relationship_type_related_general_coverage_line_603(self):
         """Test determine_relationship_type with related_general (line 603)."""
         metadata = {"conversation_complexity": 2}
@@ -752,7 +990,6 @@ class TestPrepareMemoryForStorage:
     def test_clean_expired_cache_entries_coverage_line_620(self):
         """Test _prune_embedding_cache removes expired entries (line 620)."""
         from omnimemory.core.utils import _EMBEDDING_CACHE
-        import time
 
         _EMBEDDING_CACHE["expired"] = ([1.0, 2.0], time.time() - 1000)
         _EMBEDDING_CACHE["valid"] = ([1.0, 2.0], time.time() + 1000)
@@ -785,7 +1022,6 @@ class TestPrepareMemoryForStorage:
             _EMBEDDING_CACHE,
             _EMBEDDING_CACHE_PREFIX,
         )
-        import time
 
         _EMBEDDING_CACHE.clear()
         now = time.time()
@@ -805,7 +1041,6 @@ class TestPrepareMemoryForStorage:
             _EMBEDDING_CACHE_MAX_ENTRIES,
             _EMBEDDING_CACHE_PREFIX,
         )
-        import time
 
         _EMBEDDING_CACHE.clear()
         now = time.time()

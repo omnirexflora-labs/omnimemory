@@ -1,19 +1,28 @@
+import json
+from typing import Any, Dict, List, Protocol, cast
+
+from omnimemory.core.logger_utils import get_logger
 from omnimemory.core.system_prompts import (
     conflict_resolution_agent_prompt,
     synthesis_agent_prompt,
 )
-from omnimemory.core.logger_utils import get_logger
 from omnimemory.core.utils import clean_and_parse_json
-from typing import Callable, Dict, Any, List
-import json
 
 logger = get_logger(name="omnimemory.core.agents")
+
+
+class SupportsLLMCall(Protocol):
+    """Protocol describing dependencies that expose an async llm_call method."""
+
+    async def llm_call(self, messages: List[Dict[str, str]]) -> Any:
+        """Submit chat messages to the backing LLM client."""
+        ...
 
 
 class ConflictResolutionAgent:
     """AI agent that decides how to handle memory conflicts and relationships."""
 
-    def __init__(self, llm_connection: Callable):
+    def __init__(self, llm_connection: SupportsLLMCall) -> None:
         """Initialize the conflict resolution agent.
 
         Args:
@@ -23,16 +32,16 @@ class ConflictResolutionAgent:
 
     async def decide(
         self, new_memory: Dict[str, Any], linked_memories: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """
         Analyze new memory and linked memories to decide on conflict resolution strategy.
 
         Args:
-            new_memory: The new memory being considered for storage
-            linked_memories: List of semantically linked existing memories
+            new_memory: The new memory being considered for storage.
+            linked_memories: List of semantically linked existing memories.
 
         Returns:
-            List of dicts, each with memory_id, operation ("UPDATE"|"DELETE"|"SKIP"), confidence_score, and reasoning
+            List of decision dictionaries (memory_id, operation, confidence, reasoning).
         """
         try:
             agent_input = {
@@ -91,11 +100,13 @@ class ConflictResolutionAgent:
             if json_start != -1 and json_end > json_start:
                 json_content = content[json_start:json_end]
                 try:
-                    decisions = clean_and_parse_json(json_content)
+                    parsed = clean_and_parse_json(json_content)
 
-                    if isinstance(decisions, dict) and "decisions" in decisions:
-                        decisions = decisions["decisions"]
-                    elif not isinstance(decisions, list):
+                    if isinstance(parsed, dict) and "decisions" in parsed:
+                        decisions = cast(List[Dict[str, Any]], parsed["decisions"])
+                    elif isinstance(parsed, list):
+                        decisions = cast(List[Dict[str, Any]], parsed)
+                    else:
                         raise ValueError("Expected JSON array of decisions")
 
                     for i, dec in enumerate(decisions):
@@ -176,7 +187,7 @@ class ConflictResolutionAgent:
 class SynthesisAgent:
     """AI agent that consolidates multiple memories into a single comprehensive memory."""
 
-    def __init__(self, llm_connection: Callable):
+    def __init__(self, llm_connection: SupportsLLMCall) -> None:
         """Initialize the synthesis agent.
 
         Args:
@@ -191,11 +202,11 @@ class SynthesisAgent:
         Consolidate a new memory with existing related memories into a single comprehensive memory.
 
         Args:
-            new_memory: The new memory to consolidate
-            existing_memories: List of existing memories to consolidate with
+            new_memory: The new memory to consolidate.
+            existing_memories: List of existing memories to consolidate with.
 
         Returns:
-            Dict containing consolidated_memory and synthesis_summary
+            Dict containing consolidated_memory and synthesis_summary strings.
         """
         try:
             logger.info(

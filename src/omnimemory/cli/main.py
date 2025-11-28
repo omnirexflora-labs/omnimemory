@@ -1,53 +1,50 @@
 """
-OmniMemory CLI - Command Line Interface
+OmniMemory CLI - Command Line Interface for interacting with OmniMemory SDK.
 
-Beautiful CLI for interacting with OmniMemory SDK.
 """
 
-import json
-import typer
-from pathlib import Path
-from typing import Optional, List, Dict
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich import box
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-)
-from rich.tree import Tree
-from rich.syntax import Syntax
-from rich.columns import Columns
-from rich.align import Align
-from rich.text import Text
-from datetime import datetime
+from __future__ import annotations
 
-from omnimemory.core.schemas import (
-    AddUserMessageRequest,
-    DEFAULT_MAX_MESSAGES,
-)
-from importlib import metadata as importlib_metadata
-from omnimemory.cli.banner import OMNIMEMORY_BANNER
-from omnimemory.cli.daemon_client import (
-    call_daemon,
-    DaemonNotRunningError,
-    DaemonResponseError,
-    is_daemon_running,
-)
-from omnimemory.cli.daemon_constants import ensure_state_dir, LOG_FILE, PID_FILE
+import json
+import os
+import signal
 import subprocess
 import sys
 import time
-import os
-import signal
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union, cast
+
+import typer
+from rich import box
+from rich.align import Align
+from rich.columns import Columns
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.tree import Tree
+
+from importlib import metadata as importlib_metadata
+
+from omnimemory.cli.banner import OMNIMEMORY_BANNER
+from omnimemory.cli.daemon_client import (
+    DaemonNotRunningError,
+    DaemonResponseError,
+    call_daemon,
+    is_daemon_running,
+)
+from omnimemory.cli.daemon_constants import LOG_FILE, PID_FILE, ensure_state_dir
+from omnimemory.core.schemas import AddUserMessageRequest, DEFAULT_MAX_MESSAGES
 
 console = Console(record=True, force_terminal=True)
 
 DAEMON_START_TIMEOUT = 30.0
 DAEMON_STOP_TIMEOUT = 10.0
 DAEMON_POLL_INTERVAL = 0.25
+
+ConversationPayload = Union[str, List[Any]]
+BatchMessages = List[Dict[str, str]]
 
 app = typer.Typer(
     name="omnimemory",
@@ -60,6 +57,11 @@ app = typer.Typer(
 memory_app = typer.Typer(
     name="memory",
     help="[bold green]💾 Memory Operations[/] - Add, query, get, and delete memories",
+    rich_markup_mode="rich",
+)
+batch_app = typer.Typer(
+    name="batch",
+    help="[bold blue]📦 Memory Batcher[/] - Stream conversations until batch size is reached",
     rich_markup_mode="rich",
 )
 
@@ -78,6 +80,7 @@ agent_app = typer.Typer(
 app.add_typer(memory_app, name="memory")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(agent_app, name="agent")
+memory_app.add_typer(batch_app, name="batch")
 
 
 def get_version() -> str:
@@ -97,7 +100,7 @@ def get_version() -> str:
         return "dev"
 
 
-def _show_welcome_screen():
+def _show_welcome_screen() -> None:
     """Display welcome screen with feature overview."""
     version_str = get_version()
 
@@ -126,7 +129,7 @@ def _show_welcome_screen():
     )
     features_table.add_row(
         "[bold magenta]🤖 Agent Memory[/]",
-        "Fast single-agent path: agents can store memories directly (<10s) with flexible input (string or array)",
+        "Fast single-agent path: agents can store memories directly (<5s) with flexible input (string or array)",
     )
     features_table.add_row(
         "[bold blue]📝 Conversation Summary[/]",
@@ -215,7 +218,7 @@ def main(
         "-v",
         help="Show version and exit",
     ),
-):
+) -> None:
     """OmniMemory CLI - Advanced Memory Management System."""
     if version_flag:
         version_str = get_version()
@@ -226,22 +229,22 @@ def main(
         _show_welcome_screen()
 
 
-def success_message(message: str):
+def success_message(message: str) -> None:
     """Display a success message with icon."""
     console.print(f"[bold green]✓[/] {message}")
 
 
-def error_message(message: str):
+def error_message(message: str) -> None:
     """Display an error message with icon."""
     console.print(f"[bold red]✗[/] {message}")
 
 
-def warning_message(message: str):
+def warning_message(message: str) -> None:
     """Display a warning message with icon."""
     console.print(f"[bold yellow]⚠[/] {message}")
 
 
-def info_message(message: str):
+def info_message(message: str) -> None:
     """Display an info message with icon."""
     console.print(f"[bold cyan]ℹ[/] {message}")
 
@@ -270,8 +273,20 @@ def create_metric_card(title: str, value: str, icon: str = "📊") -> Panel:
     )
 
 
-def daemon_request(method: str, payload: Optional[dict] = None):
-    """Send a request to the daemon and handle errors."""
+def daemon_request(method: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    """
+    Send a request to the daemon and handle errors.
+
+    Args:
+        method: RPC method name exposed by the daemon.
+        payload: Optional payload dictionary sent with the request.
+
+    Returns:
+        Arbitrary response data returned by the daemon.
+
+    Raises:
+        typer.Exit: When the daemon is unreachable or returns an error.
+    """
     try:
         return call_daemon(method, payload or {})
     except DaemonNotRunningError:
@@ -286,10 +301,16 @@ def daemon_request(method: str, payload: Optional[dict] = None):
 
 
 def _kill_process_by_port(port: int) -> bool:
-    """Kill any process using the specified port."""
-    try:
-        import socket
+    """
+    Kill any process using the specified TCP port.
 
+    Args:
+        port: TCP port number to inspect and clear.
+
+    Returns:
+        True if at least one process was terminated, False otherwise.
+    """
+    try:
         result = subprocess.run(
             ["lsof", "-ti", f":{port}"],
             capture_output=True,
@@ -342,8 +363,13 @@ def _kill_process_by_port(port: int) -> bool:
     return False
 
 
-def _kill_stale_daemon():
-    """Kill stale daemon process if PID file exists but process is not responding."""
+def _kill_stale_daemon() -> bool:
+    """
+    Kill stale daemon process if PID file exists but process is not responding.
+
+    Returns:
+        True if any process was terminated or PID file removed, False otherwise.
+    """
     killed = False
 
     from omnimemory.cli.daemon_constants import DAEMON_PORT
@@ -391,7 +417,17 @@ def _wait_for_daemon(
     timeout: float = DAEMON_START_TIMEOUT,
     poll_interval: float = DAEMON_POLL_INTERVAL,
 ) -> bool:
-    """Wait for the daemon to reach the desired running state."""
+    """
+    Wait for the daemon to reach the desired running state.
+
+    Args:
+        expected_running: Desired daemon state (True for running).
+        timeout: Maximum time to wait in seconds.
+        poll_interval: Interval between health checks in seconds.
+
+    Returns:
+        True if the daemon reached the expected state before timeout.
+    """
     start = time.time()
     while time.time() - start < timeout:
         if is_daemon_running() == expected_running:
@@ -404,8 +440,21 @@ def _load_conversation_payload(
     messages_file: Optional[str],
     message: Optional[str],
     text: Optional[str],
-):
-    """Load conversation data from file, single message, or raw text."""
+) -> ConversationPayload:
+    """
+    Load conversation data from file, single message, or raw text.
+
+    Args:
+        messages_file: Path to JSON file containing conversation content.
+        message: Single `role:content` string provided via CLI option.
+        text: Raw conversation text payload.
+
+    Returns:
+        Either a string payload or list of structured message dictionaries.
+
+    Raises:
+        typer.Exit: If validation fails or required inputs are missing.
+    """
     if text:
         if not text.strip():
             error_message("Conversation text cannot be empty.")
@@ -425,10 +474,12 @@ def _load_conversation_payload(
             raise typer.Exit(1)
 
         if isinstance(data, dict):
-            if isinstance(data.get("messages"), list):
-                return data["messages"]
-            if isinstance(data.get("text"), str):
-                return data["text"]
+            messages = data.get("messages")
+            if isinstance(messages, list):
+                return cast(ConversationPayload, messages)
+            text = data.get("text")
+            if isinstance(text, str):
+                return cast(ConversationPayload, text)
         if isinstance(data, list):
             return data
         if isinstance(data, str):
@@ -440,11 +491,11 @@ def _load_conversation_payload(
         raise typer.Exit(1)
 
     if message:
-        parts = message.split(":", 2)
-        if len(parts) != 3:
-            error_message("Message format must be: role:content:timestamp")
+        parts = message.split(":", 1)
+        if len(parts) != 2:
+            error_message("Message format must be: role:content")
             raise typer.Exit(1)
-        return [{"role": parts[0], "content": parts[1], "timestamp": parts[2]}]
+        return [{"role": parts[0], "content": parts[1]}]
 
     error_message(
         "Provide conversation input via --messages-file, --message, or --text."
@@ -452,16 +503,95 @@ def _load_conversation_payload(
     raise typer.Exit(1)
 
 
+def _parse_batcher_messages(
+    inline_messages: List[str], messages_file: Optional[str]
+) -> BatchMessages:
+    """
+    Parse CLI inputs into MemoryBatcher message dictionaries.
+
+    Args:
+        inline_messages: List of `role:content` strings provided inline.
+        messages_file: Optional path to JSON file containing messages.
+
+    Returns:
+        List of dictionaries compatible with MemoryBatcher append requests.
+
+    Raises:
+        typer.Exit: If the provided inputs cannot be parsed or validated.
+    """
+    messages: BatchMessages = []
+
+    if messages_file:
+        try:
+            with open(messages_file, "r", encoding="utf-8") as file_handle:
+                data = json.load(file_handle)
+        except FileNotFoundError:
+            error_message(f"File not found: {messages_file}")
+            raise typer.Exit(1)
+        except json.JSONDecodeError:
+            error_message(f"Invalid JSON in {messages_file}")
+            raise typer.Exit(1)
+
+        file_messages = data.get("messages") if isinstance(data, dict) else data
+        if not isinstance(file_messages, list):
+            error_message("File must contain a list of messages.")
+            raise typer.Exit(1)
+        for msg in file_messages:
+            if not isinstance(msg, dict):
+                error_message("Messages in file must be dictionaries.")
+                raise typer.Exit(1)
+            role = msg.get("role")
+            content = msg.get("content")
+            if not role or content is None:
+                error_message("Each message must include 'role' and 'content'.")
+                raise typer.Exit(1)
+            messages.append({"role": role, "content": content})
+
+    for entry in inline_messages:
+        parts = entry.split(":", 1)
+        if len(parts) != 2:
+            error_message(f"Invalid message format '{entry}'. Use role:content.")
+            raise typer.Exit(1)
+        role, content = parts
+        messages.append({"role": role, "content": content})
+
+    if not messages:
+        error_message("At least one message is required.")
+        raise typer.Exit(1)
+
+    return messages
+
+
+def _render_batcher_status(result: Dict[str, Any]) -> None:
+    """Render MemoryBatcher status info."""
+    table = Table(
+        title="[bold white]📦 Memory Batcher Status[/]",
+        box=box.SIMPLE_HEAVY,
+        border_style="bright_blue",
+    )
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="white")
+
+    table.add_row("App ID", result.get("app_id", "N/A"))
+    table.add_row("User ID", result.get("user_id", "N/A"))
+    table.add_row("Session ID", result.get("session_id") or "N/A")
+    table.add_row("Pending Messages", str(result.get("pending_messages", 0)))
+    table.add_row("Batch Size", str(result.get("batch_size", DEFAULT_MAX_MESSAGES)))
+    table.add_row("Status", result.get("status", "unknown"))
+    table.add_row("Last Delivery", result.get("last_delivery", "N/A"))
+    table.add_row("Last Task ID", result.get("last_task_id", "N/A"))
+
+    console.print(table)
+
+
 @daemon_app.command("start")
-def daemon_start():
+def daemon_start() -> None:
     """Start the OmniMemory daemon."""
     ensure_state_dir()
 
     if is_daemon_running():
         success_message("OmniMemory daemon is already running.")
         return
-
-    from omnimemory.cli.daemon_constants import DAEMON_PORT
 
     if _kill_stale_daemon():
         warning_message("Killed stale daemon process or process using port.")
@@ -476,7 +606,7 @@ def daemon_start():
     command = [sys.executable, "-m", "omnimemory.cli.daemon_service"]
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
+            subprocess.Popen(
                 command,
                 stdout=log_file,
                 stderr=log_file,
@@ -500,7 +630,7 @@ def daemon_start():
 
 
 @daemon_app.command("stop")
-def daemon_stop():
+def daemon_stop() -> None:
     """Stop the OmniMemory daemon."""
     if not is_daemon_running():
         if PID_FILE.exists():
@@ -529,7 +659,7 @@ def daemon_stop():
 
 
 @daemon_app.command("status")
-def daemon_status():
+def daemon_status() -> None:
     """Show daemon status."""
     if not is_daemon_running():
         warning_message("OmniMemory daemon is not running.")
@@ -568,7 +698,7 @@ def daemon_status():
 
 
 @app.command()
-def info():
+def info() -> None:
     """Show OmniMemory welcome screen and comprehensive feature guide."""
     console.print()
     console.print(OMNIMEMORY_BANNER)
@@ -746,7 +876,7 @@ def info():
 
 
 @app.command()
-def health():
+def health() -> None:
     """Show comprehensive OmniMemory system health."""
     console.print()
     console.print(OMNIMEMORY_BANNER)
@@ -856,15 +986,15 @@ def memory_add(
         None, "--messages-file", "-f", help="Path to JSON file with messages"
     ),
     message: Optional[str] = typer.Option(
-        None, "--message", "-m", help="Single message content (role:content:timestamp)"
+        None, "--message", "-m", help="Single message content (role:content)"
     ),
-):
-    """
+) -> None:
+    f"""
     Add a new memory from user messages.
 
     Messages can be provided via:
     - JSON file with messages array (--messages-file)
-    - Single message (--message) in format "role:content:timestamp"
+    - Single message (--message) in format "role:content" (role must be: user, assistant, or system)
 
     Maximum {DEFAULT_MAX_MESSAGES} messages allowed.
     """
@@ -883,11 +1013,11 @@ def memory_add(
                 error_message(f"Invalid JSON in {messages_file}")
                 raise typer.Exit(1)
         elif message:
-            parts = message.split(":", 2)
-            if len(parts) != 3:
-                error_message("Message format must be: role:content:timestamp")
+            parts = message.split(":", 1)
+            if len(parts) != 2:
+                error_message("Message format must be: role:content")
                 raise typer.Exit(1)
-            messages = [{"role": parts[0], "content": parts[1], "timestamp": parts[2]}]
+            messages = [{"role": parts[0], "content": parts[1]}]
         else:
             error_message("Either --messages-file or --message must be provided")
             raise typer.Exit(1)
@@ -949,9 +1079,9 @@ def memory_add(
         console.print()
 
         console.print("[dim]Next steps:[/]")
-        console.print(f"  [cyan]• Memory is being processed asynchronously[/]")
+        console.print("  [cyan]• Memory is being processed asynchronously[/]")
         console.print(
-            f"  [cyan]• Use[/] omnimemory memory query [dim]to search for memories[/]"
+            "  [cyan]• Use[/] omnimemory memory query [dim]to search for memories[/]"
         )
         console.print()
 
@@ -959,6 +1089,48 @@ def memory_add(
         raise
     except Exception as e:
         error_message(f"Error: {e}")
+        raise typer.Exit(1)
+
+
+@batch_app.command("add")
+def memory_batch_add(
+    app_id: str = typer.Option(..., "--app-id", "-a", help="Application ID"),
+    user_id: str = typer.Option(..., "--user-id", "-u", help="User ID"),
+    session_id: Optional[str] = typer.Option(
+        None, "--session-id", "-s", help="Session ID"
+    ),
+    message: List[str] = typer.Option(
+        [], "--message", "-m", help="Message entry in role:content format"
+    ),
+    messages_file: Optional[str] = typer.Option(
+        None, "--messages-file", "-f", help="Path to JSON file with messages"
+    ),
+) -> None:
+    """Append role/content messages. Auto-flush occurs once batch limit is reached."""
+    console.print()
+    messages = _parse_batcher_messages(message, messages_file)
+    payload = {
+        "batch_request": {
+            "app_id": app_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "messages": messages,
+        }
+    }
+    try:
+        result = call_daemon("memory_batcher_add", payload)
+        _render_batcher_status(result)
+        status = result.get("status", "pending")
+        if status == "flushed":
+            success_message("Batch submitted to OmniMemory.")
+        elif status == "pending":
+            success_message(
+                f"Messages buffered ({result.get('pending_messages', 0)} pending)."
+            )
+        else:
+            success_message("Memory batcher updated.")
+    except (DaemonNotRunningError, DaemonResponseError) as exc:
+        error_message(f"Daemon error: {exc}")
         raise typer.Exit(1)
 
 
@@ -981,14 +1153,14 @@ def memory_query(
         None, "--threshold", "-t", help="Similarity threshold (0.0-1.0)"
     ),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-    query_words: List[str] = typer.Argument(
+    query_words: Optional[List[str]] = typer.Argument(
         None,
         help=(
             "Optional query text without --query flag. "
             "Useful when you forget to wrap the query in quotes."
         ),
     ),
-):
+) -> None:
     """Query memories with intelligent multi-dimensional ranking."""
     console.print()
 
@@ -1091,7 +1263,7 @@ def memory_get(
     memory_id: str = typer.Option(..., "--memory-id", "-m", help="Memory ID"),
     app_id: str = typer.Option(..., "--app-id", "-a", help="Application ID"),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
+) -> None:
     """Get a single memory by its ID."""
     console.print()
 
@@ -1172,7 +1344,7 @@ def memory_evolution(
     output_file: str = typer.Option(
         None, "--output", "-o", help="Output file path (for graph formats)"
     ),
-):
+) -> None:
     """Traverse the memory evolution chain using singly linked list algorithm."""
     console.print()
 
@@ -1343,7 +1515,7 @@ def memory_delete(
     memory_id: str = typer.Option(..., "--memory-id", "-m", help="Memory ID"),
     app_id: str = typer.Option(..., "--app-id", "-a", help="Application ID"),
     confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
-):
+) -> None:
     """Delete a memory from the collection."""
     console.print()
 
@@ -1405,7 +1577,7 @@ def agent_summarize(
         None, "--messages-file", "-f", help="Path to JSON conversation payload"
     ),
     message: Optional[str] = typer.Option(
-        None, "--message", "-m", help="Single message entry role:content:timestamp"
+        None, "--message", "-m", help="Single message entry (role:content)"
     ),
     text: Optional[str] = typer.Option(
         None, "--text", "-t", help="Raw conversation text"
@@ -1419,7 +1591,7 @@ def agent_summarize(
         "-H",
         help="Webhook headers (key=value). Can be provided multiple times.",
     ),
-):
+) -> None:
     """Generate a conversation summary using the single-agent pipeline."""
     console.print()
 
@@ -1433,7 +1605,7 @@ def agent_summarize(
         key, value = header.split("=", 1)
         headers_dict[key.strip()] = value.strip()
 
-    summary_request = {
+    summary_request: Dict[str, Any] = {
         "app_id": app_id,
         "user_id": user_id,
         "session_id": session_id,
@@ -1529,7 +1701,7 @@ def agent_add_memory(
     messages: Optional[str] = typer.Option(
         None, "--messages", "-m", help="Raw messages text"
     ),
-):
+) -> None:
     """Create memory from agent messages (async)."""
     console.print()
 

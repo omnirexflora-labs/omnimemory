@@ -4,8 +4,7 @@ Comprehensive unit tests for OmniMemory core agents.
 
 import pytest
 import json
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from typing import Dict, Any, List
+from unittest.mock import Mock, AsyncMock, patch
 
 from omnimemory.core.agents import ConflictResolutionAgent, SynthesisAgent
 
@@ -362,7 +361,7 @@ That's the decision."""
             {"memory_id": "mem2", "document": "D2", "composite_score": 0.7},
         ]
 
-        with patch("omnimemory.core.agents.logger") as mock_logger:
+        with patch("omnimemory.core.agents.logger"):
             result = await agent.decide(new_memory, linked_memories)
             assert result[0]["confidence_score"] == 0.5
             assert result[1]["confidence_score"] == 0.5

@@ -6,13 +6,14 @@ Uses lifespan management to initialize SDK once at startup.
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, Path, status, Request
-from fastapi.responses import JSONResponse
+from typing import Any, AsyncIterator, Dict, Optional, TYPE_CHECKING, Union, cast
+
+from fastapi import FastAPI, HTTPException, Path, Query, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
-from typing import Optional
-from omnimemory.core.logger_utils import get_logger
 
+from omnimemory.core.logger_utils import get_logger
 from omnimemory.sdk import OmniMemorySDK
 from omnimemory.core.schemas import (
     AddUserMessageRequest,
@@ -23,15 +24,34 @@ from omnimemory.core.schemas import (
     MemoryResponse,
     MemoryListResponse,
     SuccessResponse,
+    MemoryBatcherAppendRequest,
+    MemoryBatcherStatusResponse,
 )
+
+if TYPE_CHECKING:
+    JSONResponseType = JSONResponse
+    HTMLResponseType = HTMLResponse
+    PlainTextResponseType = PlainTextResponse
+else:
+    JSONResponseType = Any
+    HTMLResponseType = Any
+    PlainTextResponseType = Any
 
 
 logger = get_logger(name="omnimemory.api.server")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager to initialize and cleanup SDK."""
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    Manage application lifespan by initializing and shutting down the SDK.
+
+    Args:
+        app: FastAPI application instance whose state holds the SDK reference.
+
+    Yields:
+        None. The context ensures startup and teardown are executed.
+    """
     logger.info("Initializing OmniMemorySDK...")
     try:
         app.state.sdk = OmniMemorySDK()
@@ -69,30 +89,51 @@ app.add_middleware(
 
 
 def get_sdk(request: Request) -> OmniMemorySDK:
-    """Get the SDK instance from app.state, raising error if not initialized."""
-    if not hasattr(request.app.state, "sdk") or request.app.state.sdk is None:
+    """
+    Retrieve the OmniMemorySDK instance stored on the FastAPI app state.
+
+    Args:
+        request: Incoming FastAPI request carrying the app state.
+
+    Returns:
+        The initialized OmniMemorySDK instance.
+
+    Raises:
+        HTTPException: If the SDK has not been initialized yet.
+    """
+    sdk = getattr(request.app.state, "sdk", None)
+    if sdk is None:
         logger.error("SDK not initialized")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OmniMemorySDK not initialized",
         )
-    return request.app.state.sdk
+    return cast(OmniMemorySDK, sdk)
 
 
 @app.post(
     "/api/v1/memories",
     response_model=TaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Add memory from user messages (async)",
+    summary="Add memory from user messages",
     tags=["Memory Operations"],
 )
-async def add_memory(request: AddUserMessageRequest, http_request: Request):
+async def add_memory(
+    request: AddUserMessageRequest, http_request: Request
+) -> TaskResponse:
     """
     Add memory from user messages and trigger asynchronous memory processing.
 
     Returns task information immediately. The memory is processed asynchronously.
 
     Validation: Messages count is validated by UserMessages schema (DEFAULT_MAX_MESSAGES).
+
+    Args:
+        request: Structured request payload containing user messages to persist.
+        http_request: FastAPI request that provides access to the shared SDK.
+
+    Returns:
+        TaskResponse describing the asynchronous processing task that was queued.
     """
     try:
         logger.info(
@@ -144,13 +185,21 @@ async def add_memory(request: AddUserMessageRequest, http_request: Request):
 )
 async def summarize_conversation(
     request: ConversationSummaryRequest, http_request: Request
-):
+) -> Union[ConversationSummaryResponse, JSONResponseType]:
     """
     Generate a conversation summary via a single agent.
 
     - If a callback URL is supplied, returns 202 Accepted immediately and
       delivers the summary to the webhook once ready.
     - Otherwise returns the summary payload synchronously.
+
+    Args:
+        request: Conversation context and optional callback configuration.
+        http_request: FastAPI request used to retrieve the SDK instance.
+
+    Returns:
+        ConversationSummaryResponse when executed synchronously, or JSONResponse
+        containing task metadata when executed asynchronously.
     """
     try:
         sdk = get_sdk(http_request)
@@ -176,11 +225,13 @@ async def summarize_conversation(
 @app.post(
     "/api/v1/agent/memories",
     tags=["Agent Operations"],
-    summary="Create memory from agent message (async)",
+    summary="Create memory from agent message",
     response_model=TaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def add_agent_memory(request: AgentMemoryRequest, http_request: Request):
+async def add_agent_memory(
+    request: AgentMemoryRequest, http_request: Request
+) -> TaskResponse:
     """
     Create and store a memory from agent messages asynchronously.
 
@@ -189,6 +240,13 @@ async def add_agent_memory(request: AgentMemoryRequest, http_request: Request):
     Simple flow: agent sends messages (string or list), we generate a summary
     using the fast prompt, embed it, and store it directly. No conflict resolution,
     no linking, no metadata extraction - just store.
+
+    Args:
+        request: Agent memory payload describing app, user, session, and content.
+        http_request: FastAPI request used to retrieve the SDK instance.
+
+    Returns:
+        TaskResponse describing the queued agent memory ingestion task.
     """
     try:
         logger.info(
@@ -212,6 +270,39 @@ async def add_agent_memory(request: AgentMemoryRequest, http_request: Request):
         )
 
 
+@app.post(
+    "/api/v1/memory-batcher/messages",
+    tags=["Memory Operations"],
+    summary="Append messages to the server-side MemoryBatcher",
+    response_model=MemoryBatcherStatusResponse,
+)
+async def append_memory_batch(
+    request: MemoryBatcherAppendRequest, http_request: Request
+) -> MemoryBatcherStatusResponse:
+    """
+    Append messages to the MemoryBatcher buffer.
+
+    Args:
+        request: Payload describing the batch append operation.
+        http_request: FastAPI request used to look up the SDK instance.
+
+    Returns:
+        MemoryBatcherStatusResponse describing the current batcher state.
+    """
+    try:
+        sdk = get_sdk(http_request)
+        result = await sdk.memory_batcher_add(request)
+        return MemoryBatcherStatusResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error appending batcher messages: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to append batcher messages: {str(exc)}",
+        )
+
+
 @app.get(
     "/api/v1/memories/query",
     response_model=MemoryListResponse,
@@ -220,17 +311,25 @@ async def add_agent_memory(request: AgentMemoryRequest, http_request: Request):
 )
 async def query_memory(
     http_request: Request,
-    app_id: str = Query(..., description="Application ID"),
-    query: str = Query(..., description="Natural language query", min_length=1),
-    user_id: Optional[str] = Query(None, description="User ID filter"),
-    session_id: Optional[str] = Query(None, description="Session ID filter"),
+    app_id: str = Query(
+        ..., description="Application ID (min 10 chars)", min_length=10
+    ),
+    query: str = Query(
+        ..., description="Natural language query (min 3 chars)", min_length=3
+    ),
+    user_id: Optional[str] = Query(
+        None, description="User ID filter (min 10 chars if provided)", min_length=10
+    ),
+    session_id: Optional[str] = Query(
+        None, description="Session ID filter (min 10 chars if provided)", min_length=10
+    ),
     n_results: Optional[int] = Query(
         None, description="Maximum number of results", ge=1, le=100
     ),
     similarity_threshold: Optional[float] = Query(
         None, description="Similarity threshold", ge=0.0, le=1.0
     ),
-):
+) -> MemoryListResponse:
     """
     Query memory with intelligent multi-dimensional ranking.
 
@@ -238,6 +337,18 @@ async def query_memory(
     - Relevance (semantic similarity)
     - Recency (time-based freshness)
     - Importance (content significance)
+
+    Args:
+        http_request: FastAPI request used to access the SDK.
+        app_id: Application identifier scope for the search.
+        query: Natural language user query.
+        user_id: Optional user filter.
+        session_id: Optional session filter.
+        n_results: Optional upper bound on returned memories.
+        similarity_threshold: Optional cosine similarity cutoff.
+
+    Returns:
+        MemoryListResponse containing ranked memories and result count.
     """
     try:
         logger.info(
@@ -275,12 +386,22 @@ async def query_memory(
 async def get_memory(
     http_request: Request,
     memory_id: str = Path(..., description="Memory ID"),
-    app_id: str = Query(..., description="Application ID"),
-):
+    app_id: str = Query(
+        ..., description="Application ID (min 10 chars)", min_length=10
+    ),
+) -> MemoryResponse:
     """
     Get a single memory by its ID.
 
     Returns the complete memory data including document, metadata, and all fields.
+
+    Args:
+        http_request: FastAPI request used to access the SDK.
+        memory_id: Identifier of the memory document.
+        app_id: Application identifier that owns the memory.
+
+    Returns:
+        MemoryResponse containing the retrieved memory payload.
     """
     try:
         logger.info(f"Getting memory: memory_id={memory_id}, app_id={app_id}")
@@ -318,12 +439,22 @@ async def get_memory(
 async def delete_memory(
     http_request: Request,
     memory_id: str = Path(..., description="Memory ID"),
-    app_id: str = Query(..., description="Application ID"),
-):
+    app_id: str = Query(
+        ..., description="Application ID (min 10 chars)", min_length=10
+    ),
+) -> SuccessResponse:
     """
     Delete a memory from the collection.
 
     Returns success status.
+
+    Args:
+        http_request: FastAPI request used to access the SDK.
+        memory_id: Identifier of the memory document.
+        app_id: Application identifier that owns the memory.
+
+    Returns:
+        SuccessResponse indicating whether the deletion succeeded.
     """
     try:
         logger.info(f"Deleting memory: memory_id={memory_id}, app_id={app_id}")
@@ -335,7 +466,9 @@ async def delete_memory(
         if success:
             logger.info(f"Memory deleted successfully: memory_id={memory_id}")
             return SuccessResponse(
-                success=True, message=f"Memory {memory_id} deleted successfully"
+                success=True,
+                message=f"Memory {memory_id} deleted successfully",
+                data={},
             )
         else:
             logger.warning(f"Failed to delete memory: memory_id={memory_id}")
@@ -363,8 +496,10 @@ async def delete_memory(
 async def traverse_memory_evolution_chain(
     http_request: Request,
     memory_id: str = Path(..., description="Starting memory ID"),
-    app_id: str = Query(..., description="Application ID"),
-):
+    app_id: str = Query(
+        ..., description="Application ID (min 10 chars)", min_length=10
+    ),
+) -> MemoryListResponse:
     """
     Traverse the memory evolution chain using singly linked list algorithm.
 
@@ -372,6 +507,14 @@ async def traverse_memory_evolution_chain(
     reaching None, collecting all memories in the evolution chain.
 
     Returns memories in evolution order (oldest to newest).
+
+    Args:
+        http_request: FastAPI request used to access the SDK.
+        memory_id: Starting memory identifier whose chain will be traversed.
+        app_id: Application identifier that owns the chain.
+
+    Returns:
+        MemoryListResponse with the ordered evolution chain.
     """
     try:
         logger.info(
@@ -406,9 +549,11 @@ async def traverse_memory_evolution_chain(
 async def generate_evolution_graph(
     http_request: Request,
     memory_id: str = Path(..., description="Starting memory ID"),
-    app_id: str = Query(..., description="Application ID"),
+    app_id: str = Query(
+        ..., description="Application ID (min 10 chars)", min_length=10
+    ),
     format: str = Query("mermaid", description="Graph format: mermaid, dot, or html"),
-):
+) -> Union[HTMLResponseType, PlainTextResponseType]:
     """
     Generate a graph visualization of the memory evolution chain.
 
@@ -416,6 +561,15 @@ async def generate_evolution_graph(
     - mermaid: Mermaid diagram syntax (text-based, widely supported)
     - dot: Graphviz DOT format (can be rendered to PNG/SVG)
     - html: HTML file with embedded Mermaid.js visualization
+
+    Args:
+        http_request: FastAPI request used to access the SDK.
+        memory_id: Starting memory identifier whose chain is rendered.
+        app_id: Application identifier that owns the chain.
+        format: Output format for the generated graph artifact.
+
+    Returns:
+        HTMLResponse or PlainTextResponse containing the rendered graph.
     """
     try:
         logger.info(
@@ -444,13 +598,8 @@ async def generate_evolution_graph(
             )
 
         if format == "html":
-            from fastapi.responses import HTMLResponse
-
             return HTMLResponse(content=graph_output)
-        else:
-            from fastapi.responses import PlainTextResponse
-
-            return PlainTextResponse(content=graph_output)
+        return PlainTextResponse(content=graph_output)
 
     except HTTPException:
         raise
@@ -463,8 +612,16 @@ async def generate_evolution_graph(
 
 
 @app.get("/health", summary="Health check", tags=["System"])
-async def health_check(http_request: Request):
-    """Health check endpoint."""
+async def health_check(http_request: Request) -> Dict[str, Any]:
+    """
+    Basic service health probe.
+
+    Args:
+        http_request: FastAPI request used to inspect app state.
+
+    Returns:
+        Dictionary containing service status and SDK initialization state.
+    """
     sdk_initialized = (
         hasattr(http_request.app.state, "sdk")
         and http_request.app.state.sdk is not None
@@ -481,8 +638,16 @@ async def health_check(http_request: Request):
     summary="Get vector DB connection pool stats",
     tags=["System"],
 )
-async def get_pool_stats(http_request: Request):
-    """Expose connection pool statistics for observability."""
+async def get_pool_stats(http_request: Request) -> Dict[str, Any]:
+    """
+    Expose connection pool statistics for observability.
+
+    Args:
+        http_request: FastAPI request used to look up the SDK instance.
+
+    Returns:
+        Dictionary with connection pool metrics as returned by the SDK.
+    """
     try:
         stats = await get_sdk(http_request).get_connection_pool_stats()
         return stats
@@ -497,11 +662,11 @@ async def get_pool_stats(http_request: Request):
 
 
 @app.get("/", summary="API information", tags=["System"])
-async def root():
+async def root() -> Dict[str, Any]:
     """API root endpoint with basic information."""
     return {
         "name": "OmniMemory API",
-        "version": "0.1.0-beta",
+        "version": "0.0.1",
         "architecture": "Self-Evolving Composite Memory Synthesis Architecture (SECMSA)",
         "description": "REST API for OmniMemory - Dual-Agent Construction, Persistence Storage, Self-Evolution",
         "endpoints": {"docs": "/docs", "health": "/health", "api": "/api/v1"},

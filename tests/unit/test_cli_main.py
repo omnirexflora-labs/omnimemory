@@ -4,14 +4,8 @@ Comprehensive unit tests for OmniMemory CLI.
 
 import pytest
 import json
-import subprocess
-import sys
-import time
-import os
-import signal
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock, mock_open, call
-from typing import Optional
+from unittest.mock import Mock, patch, MagicMock, mock_open
 import typer
 from typer.testing import CliRunner
 from importlib import metadata as importlib_metadata
@@ -47,15 +41,11 @@ from omnimemory.cli.main import (
     memory_app,
     daemon_app,
     agent_app,
-    DAEMON_START_TIMEOUT,
-    DAEMON_STOP_TIMEOUT,
-    DAEMON_POLL_INTERVAL,
 )
 from omnimemory.cli.daemon_client import (
     DaemonNotRunningError,
     DaemonResponseError,
 )
-from omnimemory.cli.daemon_constants import PID_FILE, LOG_FILE
 from omnimemory.core.schemas import DEFAULT_MAX_MESSAGES
 
 runner = CliRunner()
@@ -368,6 +358,7 @@ class TestDaemonRequest:
         """Test daemon_request with no payload."""
         mock_call_daemon.return_value = {"result": "success"}
         result = daemon_request("test_method")
+        assert result == {"result": "success"}
         mock_call_daemon.assert_called_once_with("test_method", {})
 
 
@@ -440,7 +431,6 @@ class TestKillProcessByPort:
     def test_kill_process_by_port_ss_fallback(self):
         """Test _kill_process_by_port uses ss command fallback (lines 315-340)."""
         from subprocess import TimeoutExpired
-        import re
 
         with patch("omnimemory.cli.main.subprocess.run") as mock_run:
             mock_run.side_effect = [
@@ -460,7 +450,6 @@ class TestKillProcessByPort:
     def test_kill_process_by_port_ss_fallback_no_match(self):
         """Test _kill_process_by_port ss fallback when no PID match."""
         from subprocess import TimeoutExpired
-        import re
 
         with patch("omnimemory.cli.main.subprocess.run") as mock_run:
             mock_run.side_effect = [
@@ -667,9 +656,7 @@ class TestLoadConversationPayload:
 
     def test_load_from_single_message(self):
         """Test _load_conversation_payload loads from single message."""
-        result = _load_conversation_payload(
-            None, "user:Hello:2024-01-01T00:00:00Z", None
-        )
+        result = _load_conversation_payload(None, "user:Hello", None)
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["role"] == "user"
@@ -678,7 +665,7 @@ class TestLoadConversationPayload:
     def test_load_from_single_message_invalid_format(self, mock_console):
         """Test _load_conversation_payload handles invalid message format."""
         with pytest.raises(typer.Exit) as exc_info:
-            _load_conversation_payload(None, "invalid:format", None)
+            _load_conversation_payload(None, "invalid", None)
         assert exc_info.value.exit_code == 1
 
     def test_load_from_nothing(self, mock_console):
@@ -1998,6 +1985,7 @@ class TestEdgeCases:
         """Test daemon_request with None payload."""
         mock_call_daemon.return_value = {"result": "success"}
         result = daemon_request("test_method", None)
+        assert result == {"result": "success"}
         mock_call_daemon.assert_called_once_with("test_method", {})
 
     def test_create_header_panel_empty_title(self):

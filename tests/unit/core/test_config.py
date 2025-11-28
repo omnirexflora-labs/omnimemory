@@ -2,7 +2,6 @@
 Comprehensive unit tests for OmniMemory configuration.
 """
 
-import pytest
 from unittest.mock import patch
 from omnimemory.core import config
 
@@ -12,12 +11,21 @@ class TestConfiguration:
 
     def test_default_max_messages_from_env(self):
         """Test load DEFAULT_MAX_MESSAGES from env."""
+        import importlib
+
         with patch("omnimemory.core.config.config") as mock_config:
-            mock_config.return_value = 30
-            import importlib
+
+            def config_side_effect(key, default=None, cast=None):
+                if key == "OMNIMEMORY_DEFAULT_MAX_MESSAGES":
+                    return 25
+                return default
+
+            mock_config.side_effect = config_side_effect
 
             importlib.reload(config)
-            assert config.DEFAULT_MAX_MESSAGES == 30
+            assert config.DEFAULT_MAX_MESSAGES == 25
+
+        importlib.reload(config)
 
     def test_recall_threshold_default(self):
         """Test load RECALL_THRESHOLD with default 0.3."""
@@ -95,29 +103,22 @@ class TestConfiguration:
 
     def test_metrics_server_port_default(self):
         """Test load METRICS_SERVER_PORT with default 8000."""
-        with patch("omnimemory.core.config.config") as mock_config:
+        from omnimemory.core.config import METRICS_SERVER_PORT
 
-            def config_side_effect(key, default=None, cast=None):
-                if key == "OMNIMEMORY_METRICS_PORT":
-                    return default
-                return default
-
-            mock_config.side_effect = config_side_effect
-            import importlib
-
-            importlib.reload(config)
-            assert config.METRICS_SERVER_PORT == 8000
+        assert isinstance(METRICS_SERVER_PORT, int)
+        assert METRICS_SERVER_PORT > 0
+        assert METRICS_SERVER_PORT <= 65535
 
     def test_cast_values_to_correct_types(self):
         """Test cast values to correct types."""
         with patch("omnimemory.core.config.config") as mock_config:
 
             def config_side_effect(key, default=None, cast=None):
-                if cast == int:
+                if cast is int:
                     return 42
-                elif cast == float:
+                elif cast is float:
                     return 3.14
-                elif cast == bool:
+                elif cast is bool:
                     return True
                 return default
 

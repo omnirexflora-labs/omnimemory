@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import TypedDict, List, Optional
 
 
 class MemoryNoteData(TypedDict, total=False):

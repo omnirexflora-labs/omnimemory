@@ -2,10 +2,10 @@
 Prometheus-based metrics and observability system for OmniMemory.
 """
 
-import time
 import threading
-from typing import Optional, Dict
+import time
 from threading import Lock
+from typing import Any, Optional, Literal
 
 from prometheus_client import (
     Counter,
@@ -15,7 +15,6 @@ from prometheus_client import (
     REGISTRY,
     start_http_server,
 )
-from prometheus_client.core import CollectorRegistry
 
 from omnimemory.core.logger_utils import get_logger
 from omnimemory.core.config import METRICS_SERVER_PORT, ENABLE_METRICS_SERVER
@@ -33,8 +32,8 @@ class MetricsCollector:
     _instance: Optional["MetricsCollector"] = None
     _lock = Lock()
 
-    def __new__(cls, enable: bool = True):
-        """Singleton pattern."""
+    def __new__(cls, enable: bool = True) -> "MetricsCollector":
+        """Implement singleton semantics for the collector."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -42,12 +41,12 @@ class MetricsCollector:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, enable: bool = True):
-        if self._initialized:
+    def __init__(self, enable: bool = True) -> None:
+        if getattr(self, "_initialized", False):
             return
 
-        self.enabled = enable
-        self._server_started = False
+        self.enabled: bool = enable
+        self._server_started: bool = False
         self._initialized = True
 
         if not self.enabled:
@@ -55,7 +54,7 @@ class MetricsCollector:
 
         self._init_metrics()
 
-    def _init_metrics(self):
+    def _init_metrics(self) -> None:
         """Initialize all Prometheus metrics."""
         self.query_operations_total = Counter(
             "omnimemory_query_operations_total",
@@ -146,7 +145,7 @@ class MetricsCollector:
         success: bool,
         results_count: Optional[int] = None,
         error_code: Optional[str] = None,
-    ):
+    ) -> None:
         """Record a query operation."""
         if not self.enabled:
             return
@@ -169,7 +168,7 @@ class MetricsCollector:
         duration: float,
         success: bool,
         error_code: Optional[str] = None,
-    ):
+    ) -> None:
         """Record a write operation."""
         if not self.enabled:
             return
@@ -187,7 +186,7 @@ class MetricsCollector:
         duration: float,
         success: bool,
         error_code: Optional[str] = None,
-    ):
+    ) -> None:
         """Record an update operation."""
         if not self.enabled:
             return
@@ -207,7 +206,7 @@ class MetricsCollector:
         succeeded: int,
         failed: int,
         error_code: Optional[str] = None,
-    ):
+    ) -> None:
         """Record a batch operation."""
         if not self.enabled:
             return
@@ -228,7 +227,7 @@ class MetricsCollector:
         if error_code:
             self.errors_total.labels(operation=operation, error_code=error_code).inc()
 
-    def set_health(self, healthy: bool):
+    def set_health(self, healthy: bool) -> None:
         """Set overall health status."""
         if self.enabled:
             self.health_status.set(1.0 if healthy else 0.0)
@@ -267,80 +266,91 @@ class MetricsCollector:
             logger.warning(f"Failed to start metrics server on port {port}: {e}")
             return False
 
-    def operation_timer(self, operation_type: str, operation_name: str):
-        """Context manager for timing operations."""
+    class Timer:
+        """Context manager that records duration metrics on exit."""
 
-        class Timer:
-            def __init__(self, collector, op_type, op_name):
-                self.collector = collector
-                self.op_type = op_type
-                self.op_name = op_name
-                self.start_time = None
-                self.success = True
-                self.error_code = None
-                self.results_count = None
+        def __init__(self, collector: "MetricsCollector", op_type: str, op_name: str):
+            self.collector = collector
+            self.op_type = op_type
+            self.op_name = op_name
+            self.start_time: Optional[float] = None
+            self.success: bool = True
+            self.error_code: Optional[str] = None
+            self.results_count: Optional[int] = None
 
-            def __enter__(self):
-                self.start_time = time.time()
-                if self.op_type == "query":
-                    self.collector._inc_active_queries()
-                elif self.op_type == "write":
-                    self.collector._inc_active_writes()
-                return self
+        def __enter__(self) -> "MetricsCollector.Timer":
+            self.start_time = time.time()
+            if self.op_type == "query":
+                self.collector._inc_active_queries()
+            elif self.op_type == "write":
+                self.collector._inc_active_writes()
+            return self
 
-            def __exit__(self, exc_type, exc_val, exc_tb):
+        def __exit__(
+            self,
+            exc_type: Optional[type[BaseException]],
+            exc_val: Optional[BaseException],
+            exc_tb: Optional[Any],
+        ) -> Literal[False]:
+            if self.start_time is None:
+                duration = 0.0
+            else:
                 duration = time.time() - self.start_time
-                if exc_type is not None:
-                    self.success = False
-                    self.error_code = exc_type.__name__
+            if exc_type is not None:
+                self.success = False
+                self.error_code = exc_type.__name__
 
-                if self.op_type == "query":
-                    self.collector._dec_active_queries()
-                elif self.op_type == "write":
-                    self.collector._dec_active_writes()
+            if self.op_type == "query":
+                self.collector._dec_active_queries()
+            elif self.op_type == "write":
+                self.collector._dec_active_writes()
 
-                if self.op_type == "query":
-                    self.collector.record_query(
-                        operation=self.op_name,
-                        duration=duration,
-                        success=self.success,
-                        results_count=self.results_count,
-                        error_code=self.error_code,
-                    )
-                elif self.op_type == "write":
-                    self.collector.record_write(
-                        operation=self.op_name,
-                        duration=duration,
-                        success=self.success,
-                        error_code=self.error_code,
-                    )
-                elif self.op_type == "update":
-                    self.collector.record_update(
-                        operation=self.op_name,
-                        duration=duration,
-                        success=self.success,
-                        error_code=self.error_code,
-                    )
-                return False
+            if self.op_type == "query":
+                self.collector.record_query(
+                    operation=self.op_name,
+                    duration=duration,
+                    success=self.success,
+                    results_count=self.results_count,
+                    error_code=self.error_code,
+                )
+            elif self.op_type == "write":
+                self.collector.record_write(
+                    operation=self.op_name,
+                    duration=duration,
+                    success=self.success,
+                    error_code=self.error_code,
+                )
+            elif self.op_type == "update":
+                self.collector.record_update(
+                    operation=self.op_name,
+                    duration=duration,
+                    success=self.success,
+                    error_code=self.error_code,
+                )
+            return False
 
-        return Timer(self, operation_type, operation_name)
+    def operation_timer(
+        self, operation_type: str, operation_name: str
+    ) -> "MetricsCollector.Timer":
+        """Context manager for timing operations."""
+        return MetricsCollector.Timer(self, operation_type, operation_name)
 
-    def _inc_active_queries(self):
+    def _inc_active_queries(self) -> None:
         """Increment active queries counter."""
         if self.enabled:
             self.active_queries.inc()
 
-    def _dec_active_queries(self):
+    def _dec_active_queries(self) -> None:
         """Decrement active queries counter."""
         if self.enabled:
             self.active_queries.dec()
 
-    def _inc_active_writes(self):
+    def _inc_active_writes(self) -> None:
         """Increment active writes counter."""
         if self.enabled:
             self.active_writes.inc()
 
-    def _dec_active_writes(self):
+    def _dec_active_writes(self) -> None:
         """Decrement active writes counter."""
         if self.enabled:
             self.active_writes.dec()

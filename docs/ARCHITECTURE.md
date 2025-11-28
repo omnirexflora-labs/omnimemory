@@ -23,13 +23,13 @@
    - [Fuzzy Deduplication](#fuzzy-deduplication)
    - [Memory Link Generation and Tree Formation](#memory-link-generation-and-tree-formation)
    - [Memory Note Synthesis](#memory-note-synthesis)
-7. [API & SDK Interface](#api--sdk-interface)
-8. [Implementation Details](#implementation-details)
-9. [Scalability & Performance](#scalability--performance)
-10. [Production Features](#production-features)
-11. [Configuration](#configuration)
-12. [Future Enhancements](#future-enhancements)
-13. [Critical Review and Design Decisions](#critical-review-and-design-decisions)
+7. [Implementation Details](#implementation-details)
+8. [Scalability & Performance](#scalability--performance)
+9. [Production Features](#production-features)
+10. [Configuration](#configuration)
+11. [Future Enhancements](#future-enhancements)
+12. [Critical Review and Design Decisions](#critical-review-and-design-decisions)
+13. [Design Patterns Overview](#design-patterns-overview)
 
 ---
 
@@ -63,7 +63,7 @@ SECMSA represents a paradigm shift from passive memory storage to active cogniti
 
 ## Keywords
 
-Self-evolving memory, composite scoring, memory synthesis, dual-agent construction, conflict resolution, semantic memory, autonomous agents, cognitive architecture, status-based evolution, asynchronous processing, vector database, Qdrant, embeddings, LLM integration
+Self-evolving memory, composite scoring, memory synthesis, dual-agent construction, conflict resolution, semantic memory, autonomous agents, cognitive architecture, status-based evolution, asynchronous processing, vector database, Qdrant, ChromaDB, pgvector, MongoDB Vector Search, embeddings, LLM integration
 
 ---
 
@@ -71,11 +71,11 @@ Self-evolving memory, composite scoring, memory synthesis, dual-agent constructi
 
 **Memory Construction:** Parallel dual-agent (Episodic + Summarizer) with normalization and fuzzy deduplication  
 **Scoring Function:** `composite = relevance × (1 + recency_boost + importance_boost)` where boosts are bounded by score ranges (max 10% each)  
-**Evolution Operations:** UPDATE | DELETE | SKIP | CREATE  
+**Evolution Operations:** UPDATE | DELETE | SKIP (CREATE occurs automatically during initial synthesis or post-delete replacement)  
 **Status Tracking:** Simple status-based (`active`, `updated`, `deleted`) with `status_reason` (`consolidated`, `contradicted`, `manual_update`)  
 **Consistency Model:** Status-based updates with conflict resolution  
 **Processing Model:** Fully asynchronous (`asyncio`) with O(1) user-perceived latency  
-**Storage Backend:** Vector database (Qdrant) with connection pooling  
+**Storage Backend:** Vector database (Qdrant, ChromaDB, PostgreSQL/pgvector, MongoDB Atlas Vector Search) with connection pooling  
 **Metrics:** In-memory Prometheus metrics with HTTP endpoint  
 **Embedding Strategy:** Token-based chunking with automatic fallback for large texts  
 **Connection Pooling:** Configurable pool size (default: 10) with async context managers  
@@ -91,7 +91,7 @@ SECMSA is designed for **multi-agent, multi-user, multi-app** scenarios from day
 
 **`app_id` (Required):**
 - **Purpose:** Application-level isolation - each application has its own memory collection
-- **Storage:** Used as the collection name in the vector database (Qdrant)
+- **Storage:** Used as the collection name in the vector database
 - **Isolation:** Memories from different apps are stored in separate collections - complete physical separation
 - **Use case:** Deploy one OmniMemory instance for multiple applications (e.g., "customer-support-app", "sales-assistant-app")
 
@@ -143,107 +143,7 @@ Query Execution:
 
 ## Architecture Diagram Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SECMSA Architecture                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  INPUT: Conversational Context / Agent Messages                │
-│           ↓                                                      │
-│  ┌──────────────────────────────────────────┐                 │
-│  │   Memory Creation Paths                  │                 │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────┐│                 │
-│  │  │  Standard   │  │   Agent     │  │Summary│                 │
-│  │  │  Memory     │  │   Memory   │  │       │                 │
-│  │  │  (Full)     │  │  (Fast)    │  │       │                 │
-│  │  └──────┬──────┘  └──────┬──────┘  └──┬───┘│                 │
-│  │         │                │            │                     │
-│  │         └────────┬───────┴────────────┘                     │
-│  └───────────┬───────┼─────────────────────────────────────────┘
-│              │       │                                           │
-│              ↓       ↓                                           │
-│  ┌──────────────────────────────────────────┐                 │
-│  │   Parallel Dual Construction             │                 │
-│  │  ┌─────────────┐  ┌─────────────┐       │                 │
-│  │  │  Episodic   │  │ Summarizer  │       │                 │
-│  │  │   Agent     │  │   Agent     │       │                 │
-│  │  │             │  │             │       │                 │
-│  │  │ • Behavioral│  │ • Narrative │       │                 │
-│  │  │ • Patterns  │  │ • Content   │       │                 │
-│  │  │ • Insights   │  │ • Tags      │       │                 │
-│  │  └──────┬──────┘  └──────┬──────┘       │                 │
-│  └─────────┼─────────────────┼───────────────┘                 │
-│            │                 │                                   │
-│            └────────┬────────┘                                   │
-│                     ↓                                            │
-│  ┌──────────────────────────────────────────┐                   │
-│  │  Synthesis & Normalization              │                   │
-│  │  • Merge outputs                        │                   │
-│  │  • Fuzzy deduplication                  │                   │
-│  │  • Generate Zettelkasten note            │                   │
-│  │  • Prepare metadata                     │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Embedding Generation                   │                   │
-│  │  • Token-based chunking                  │                   │
-│  │  • Embedding API call                     │                   │
-│  │  • In-memory caching                     │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Semantic Link Discovery               │                   │
-│  │  • Vector similarity search             │                   │
-│  │  • Composite score calculation          │                   │
-│  │  • Link threshold filtering             │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Conflict Resolution Agent              │                   │
-│  │   Analyzes: Redundancy,                  │                   │
-│  │   Contradictions, Superseding            │                   │
-│  │   Outputs: UPDATE|DELETE|SKIP|CREATE    │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Synthesis Agent (if UPDATE)            │                   │
-│  │   • Consolidate memories                 │                   │
-│  │   • Merge content intelligently          │                   │
-│  │   • Preserve all unique information     │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Status-Based Update                    │                   │
-│  │   • Update status (active/updated/deleted)│                  │
-│  │   • Set status_reason                    │                   │
-│  │   • Update timestamp                     │                   │
-│  │   • Set next_id (for evolution chain)    │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │    Vector Store (Qdrant)                │                   │
-│  │   • Embeddings (retrieval)               │                   │
-│  │   • Metadata (status, reason, next_id)  │                   │
-│  │   • Connection Pooling                  │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Query & Retrieval                      │                   │
-│  │  • Semantic search                       │                   │
-│  │  • Composite scoring                     │                   │
-│  │  • Multi-dimensional ranking             │                   │
-│  └─────────────┬──────────────────────────┘                   │
-│                ↓                                                 │
-│  ┌──────────────────────────────────────────┐                   │
-│  │   Metrics & Observability                │                   │
-│  │   • Prometheus metrics                   │                   │
-│  │   • Operation timing                     │                   │
-│  │   • Error tracking                       │                   │
-│  └──────────────────────────────────────────┘                   │
-│                                                                 │
-│  OUTPUT: Self-Organizing Memory Store                          │
-└─────────────────────────────────────────────────────────────────┘
-```
+Check on the here [C4_ARCHITECTURE.md](docs/C4_ARCHITECTURE.md)
 
 ---
 
@@ -266,7 +166,7 @@ Query Execution:
 **Agents:** Episodic Agent + Summarizer Agent (parallel execution via `asyncio.gather`)
 
 **Features:**
-- Full metadata extraction (tags, keywords, semantic queries)
+- Full metadata extraction (tags, keywords, semantic queries, follow-up queries)
 - Behavioral pattern analysis
 - Conflict detection and resolution
 - Semantic linking to related memories
@@ -277,7 +177,7 @@ Query Execution:
 **Mathematical Complexity:**
 - Time: O(1) user-perceived (async background processing)
 - Space: O(n) where n = message length
-- LLM Calls: 2 (parallel) + 1 (conflict resolution, if needed) + 1 (synthesis, if UPDATE)
+- LLM Calls: 2 (parallel) + 1 (conflict resolution, if memory linked generated > 0) + 1 (synthesis, if UPDATE)
 
 #### 1.2 Agent Memory Creation (`create_agent_memory`)
 
@@ -309,7 +209,7 @@ Query Execution:
 2. Optional callback/webhook delivery
 
 **Modes:**
-- **Fast Path:** Simple text-only summary (< 10 seconds)
+- **Fast Path:** Simple text-only summary (< 1 seconds)
 - **Full Path:** Structured summary with metadata (slower)
 
 **Delivery:**
@@ -664,7 +564,7 @@ Maximum 10% boost from importance (when importance_score = 1.0, i.e., high-quali
 
 **Steps:**
 1. **Semantic Search:** Retrieve candidates with similarity > threshold
-   - Uses vector similarity search in Qdrant
+   - Uses vector similarity search in the choosen vectordb(e.g Qdrant, ChromaDB, Mongodb Atlas, and Postgres PGvector etc.)
    - Filters by `status="active"`, `app_id`, optional `user_id`/`session_id`
    - Retrieves `n_results × CANDIDATE_MULTIPLIER` candidates (default: 3×)
 2. **Composite Scoring:** Rank by `S_composite(m, query, t)`
@@ -712,7 +612,7 @@ Maximum 10% boost from importance (when importance_score = 1.0, i.e., high-quali
 
 #### 6.1 Processing Model
 
-**Framework:** Python `asyncio` (not Celery)
+**Framework:** Python `asyncio`
 
 **Non-Blocking Operations:**
 - All I/O operations use `async`/`await`
@@ -817,8 +717,7 @@ async with memory_manager._get_pooled_handler() as handler:
 **Operation Tracking:**
 - Query operations: `query_memory`
 - Write operations: `create_and_store_memory`, `create_agent_memory`, `store_memory_note`
-- Update operations: `update_memory_status`, `update_memory_timestamp`
-- Batch operations: Status updates, timestamp updates
+- Batch operations: Internal status/timestamp maintenance tasks
 - Summary operations: `generate_conversation_summary`
 
 #### 8.2 Metrics Endpoint
@@ -841,18 +740,49 @@ async with memory_manager._get_pooled_handler() as handler:
 
 #### 9.1 Qdrant Backend
 
-**Features:**
-- Async Qdrant client
-- Collection management (auto-create on first use)
-- Metadata filtering
-- Similarity search with configurable thresholds
+**Deployment Options**
+- Default docker profile (`docker compose --profile qdrant up`) runs Qdrant locally with tuned storage optimizers.
+- Remote clusters are supported by pointing `QDRANT_HOST`/`QDRANT_PORT` to any managed instance.
 
-**Collection Naming:**
-- Uses `app_id` as collection name
-- Automatic collection creation
-- Per-app isolation
+**Features**
+- Async Qdrant client with automatic collection provisioning per `app_id`.
+- Server-side metadata filtering (app, user, session, status) and similarity-threshold pre-filtering.
+- Tunable HNSW parameters exposed via environment variables.
 
-#### 9.2 Metadata Storage
+#### 9.2 ChromaDB Backend
+
+**Deployment Options**
+- Remote mode (`chromadb-remote`) talks to an HTTP server (local docker profile available via `--profile chromadb`).
+- Cloud mode (`chromadb-cloud`) uses tenant/database/API-key credentials.
+
+**Features**
+- Async HTTP client with token-auth support.
+- Automatic collection creation with cosine distance configuration.
+- Query-time filtering powered by Chroma `where` clauses.
+
+#### 9.3 PostgreSQL + pgvector Backend
+
+**Deployment Options**
+- Local pgvector container via `docker compose --profile pgvector up`.
+- External PostgreSQL clusters by supplying a `POSTGRES_URI`.
+
+
+**Features**
+- Enforces identifier sanitization and parameterized queries to prevent SQL injection.
+- Auto-enables the `vector` extension, creates per-collection tables, HNSW indexes, and JSONB GIN indexes.
+- Uses `asyncpg` connection pooling with configurable limits and health-checked docker profile.
+
+#### 9.4 MongoDB Vector Search Backend
+
+**Deployment Options**
+- Targets MongoDB Atlas or self-managed deployments via `MONGODB_URI`.
+
+**Features**
+- Uses MongoDB's native vector search index with per-collection configuration.
+- Supports metadata filtering and JSON-based payload storage identical to other handlers.
+- Shares the same async interface, so switching providers is transparent to the MemoryManager.
+
+#### 9.5 Metadata Storage
 
 **Stored Fields:**
 - `document_id`: Memory ID (UUID)
@@ -913,7 +843,7 @@ Note: Since recency_score ∈ [0.01, 1.0] and importance_score ∈ [0, 1.0],
 ### Evolution Operations
 
 ```
-Ω_conflict(M) → {UPDATE, DELETE, SKIP, CREATE}
+Ω_conflict(M) → {UPDATE, DELETE, SKIP}
 
 UPDATE(m₁, m₂, ..., mₙ) → m' where:
   content(m') = SynthesisAgent(content(m₁), ..., content(mₙ))
@@ -935,12 +865,10 @@ SKIP(m) → m where:
   updated_at(m) = current_timestamp
   (no status change)
 
-CREATE(context) → m_new where:
-  m_new = DualConstruction(context)
-  status(m_new) = "active"
-  status_reason(m_new) = "created"
-  created_at(m_new) = current_timestamp
-  updated_at(m_new) = created_at(m_new)
+# Note: CREATE is not emitted by Ω_conflict(). New memories are minted automatically during
+# the initial dual-construction path (no conflicts yet) or after a DELETE operation completes
+# and the synthesis agent determines a replacement is required. The CREATE state uses the
+# standard memory creation workflow (status="active", status_reason="created").
 ```
 
 ### Query Execution
@@ -1324,142 +1252,6 @@ where:
 - Space: O(|M_note|) where |M_note| is the length of the final note
 - The synthesis is linear in input size
 
----
-
-## API & SDK Interface
-
-### SDK Methods
-
-#### Memory Operations
-
-**`add_memory(app_id, user_id, messages, session_id=None)`**
-- Standard memory creation with full pipeline
-- Returns: `{"task_id": "uuid", "status": "accepted", ...}`
-- Async background processing
-
-**`query_memory(app_id, query, n_results=None, user_id=None, session_id=None, similarity_threshold=None)`**
-- Semantic search with composite scoring
-- Returns: List of memory objects with scores
-- Synchronous (fast query path)
-
-**`get_memory(memory_id, app_id)`**
-- Get single memory by ID
-- Returns: Memory dictionary or None
-- Synchronous
-
-**`delete_memory(app_id, memory_id)`**
-- Mark memory as deleted
-- Returns: Boolean success status
-- Synchronous
-
-**`update_memory_status(app_id, memory_id, new_status, archive_reason)`**
-- Update memory status
-- Returns: MemoryOperationResult
-- Synchronous
-
-**`traverse_memory_evolution_chain(app_id, memory_id)`**
-- Traverse evolution chain forward
-- Returns: List of memories in evolution order
-- Synchronous
-
-**`generate_evolution_graph(chain, format="mermaid")`**
-- Generate graph visualization
-- Formats: "mermaid", "dot", "html"
-- Returns: Graph string
-- Synchronous
-
-#### Agent Operations
-
-**`add_agent_memory(agent_request)`**
-- Fast agent memory storage
-- Returns: `{"task_id": "uuid", "status": "accepted", ...}`
-- Async background processing
-
-**`summarize_conversation(summary_request)`**
-- Conversation summarization
-- Returns: Summary dict (sync) or task info (async with callback)
-- Sync or async depending on callback URL
-
-#### System Operations
-
-**`warm_up()`**
-- Pre-initialize connection pool
-- Returns: Boolean success status
-- Synchronous
-
-**`get_connection_pool_stats()`**
-- Pool metrics
-- Returns: Dictionary with pool statistics
-- Synchronous
-
-**`get_task_status(task_id)`**
-- Get background task status
-- Returns: Task status and result (if completed)
-- Synchronous
-
-### API Endpoints
-
-#### Memory Endpoints
-
-**`POST /api/v1/memories`**
-- Create memory (async)
-- Request: `AddUserMessageRequest`
-- Response: `TaskResponse` (202 Accepted)
-
-**`GET /api/v1/memories/query`**
-- Query memories
-- Query params: `app_id`, `query`, `user_id?`, `session_id?`, `n_results?`, `similarity_threshold?`
-- Response: `MemoryListResponse`
-
-**`GET /api/v1/memories/{memory_id}`**
-- Get memory by ID
-- Query params: `app_id`
-- Response: `MemoryResponse`
-
-**`DELETE /api/v1/memories/{memory_id}`**
-- Delete memory
-- Query params: `app_id`
-- Response: `SuccessResponse`
-
-**`GET /api/v1/memories/{memory_id}/evolution`**
-- Traverse evolution chain
-- Query params: `app_id`
-- Response: `MemoryListResponse`
-
-**`GET /api/v1/memories/{memory_id}/evolution/graph`**
-- Generate evolution graph
-- Query params: `app_id`, `format?` (mermaid/dot/html)
-- Response: Graph string or HTML
-
-#### Agent Endpoints
-
-**`POST /api/v1/agent/memories`**
-- Create agent memory (async)
-- Request: `AgentMemoryRequest`
-- Response: `TaskResponse` (202 Accepted)
-
-**`POST /api/v1/agent/summaries`**
-- Generate summary (sync or async)
-- Request: `ConversationSummaryRequest`
-- Response: `ConversationSummaryResponse` (200) or `TaskResponse` (202)
-
-#### System Endpoints
-
-**`GET /api/v1/system/pool-stats`**
-- Connection pool statistics
-- Response: Pool stats dictionary
-
-**`GET /health`**
-- Health check
-- Response: Health status dictionary
-
-**`GET /metrics`**
-- Prometheus metrics
-- Response: Prometheus metrics format
-
-**`GET /`**
-- API information
-- Response: API metadata
 
 ---
 
@@ -1467,7 +1259,7 @@ where:
 
 ### Asynchronous Processing
 
-**Framework:** Python `asyncio` (not Celery)
+**Framework:** Python `asyncio`
 
 **Non-Blocking:**
 - All I/O operations use `async`/`await`
@@ -1483,7 +1275,7 @@ where:
 
 ### Storage Backend
 
-**Vector Database:** Qdrant (async client)
+**Vector Database:** Pluggable async clients (Qdrant default; ChromaDB, MongoDB, pgvector optional profiles)
 
 **Connection Pool:**
 - Configurable pool size (default: 10)
@@ -1492,7 +1284,7 @@ where:
 - Pool statistics tracking
 
 **Metadata:**
-- Stored alongside embeddings in Qdrant
+- Stored alongside embeddings in each provider (JSON payload or JSONB depending on backend)
 - Query-time filtering by metadata fields
 - Status filtering always applied (`status="active"`)
 
@@ -1647,52 +1439,9 @@ where:
 - Straightforward API design
 
 **Minimal Dependencies:**
-- In-memory metrics (no Redis)
+- In-memory metrics storage
 - Simple status tracking
 - Easy to deploy and maintain
-
----
-
-## Configuration
-
-### Environment Variables
-
-**Essential LLM Configuration:**
-- `LLM_API_KEY`: LLM API key (required)
-- `LLM_PROVIDER`: LLM provider (required)
-- `LLM_MODEL`: LLM model name (required)
-- `LLM_TEMPERATURE`: Temperature (default: 0.4)
-- `LLM_MAX_TOKENS`: Max tokens (default: 3000)
-- `LLM_TOP_P`: Top-p sampling (default: 0.9)
-
-**Essential Embedding Configuration:**
-- `EMBEDDING_API_KEY`: Embedding API key (required)
-- `EMBEDDING_PROVIDER`: Embedding provider (required)
-- `EMBEDDING_MODEL`: Embedding model name (required)
-- `EMBEDDING_DIMENSIONS`: Embedding dimensions (required)
-- `EMBEDDING_ENCODING_FORMAT`: Encoding format (default: "base64")
-- `EMBEDDING_TIMEOUT`: Timeout in seconds (default: 600)
-
-**Qdrant Connection:**
-- `OMNI_MEMORY_PROVIDER`: Provider type (default: "qdrant-remote")
-- `QDRANT_HOST`: Qdrant host (default: "localhost")
-- `QDRANT_PORT`: Qdrant port (default: 6333)
-
-**OmniMemory Hyperparameters:**
-- `OMNIMEMORY_DEFAULT_MAX_MESSAGES`: Max messages (default: 30)
-- `OMNIMEMORY_RECALL_THRESHOLD`: Recall threshold (default: 0.3)
-- `OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD`: Composite threshold (default: 0.4)
-- `OMNIMEMORY_DEFAULT_N_RESULTS`: Default results (default: 10)
-- `OMNIMEMORY_LINK_THRESHOLD`: Link threshold (default: 0.7)
-- `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS`: Pool size (default: 10)
-
-**Metrics & Observability:**
-- `OMNIMEMORY_ENABLE_METRICS_SERVER`: Enable metrics (default: false)
-- `OMNIMEMORY_METRICS_PORT`: Metrics port (default: 9001)
-
-**Logging:**
-- `LOG_LEVEL`: Log level (default: "INFO")
-- `LOG_DIR`: Log directory (default: "./logs")
 
 ---
 
@@ -1827,4 +1576,35 @@ The architecture prioritizes simplicity and reliability, using status-based trac
 The system's mathematical foundations ensure provable guarantees about retrieval optimality and semantic coherence, while the asynchronous architecture provides O(1) user-perceived latency and efficient resource utilization. The multiple memory creation paths accommodate different use cases, from rich conversational context to fast agent message storage.
 
 SECMSA represents a paradigm shift from passive memory storage to active cognitive synthesis, where memories autonomously organize, evolve, and adapt to maintain semantic coherence in autonomous AI systems.
+
+---
+
+## Design Patterns Overview
+
+The implementation intentionally leans on well-known architectural and object-oriented patterns to keep the system modular, testable, and extensible:
+
+1. **Dependency Injection (DI)**
+   - `MemoryManager` receives `LLMConnection` and never constructs concrete vector handlers directly.
+   - Vector DB instances are provided by factories and pooled via `VectorDBHandlerPool`, keeping high-level orchestration decoupled from backend details.
+
+2. **Abstract Factory + Registry**
+   - `vector_db_factory.py` implements an Abstract Factory pattern: each backend exposes a factory class with identical `create()` signatures.
+   - `VectorDBFactoryRegistry` acts as the concrete factory selector/dispatcher, mapping `OMNI_MEMORY_PROVIDER` to the correct backend factory. Consumers call a single method (`create_from_env`/`create`) without any `if/elif` chains.
+
+3. **Singleton Resource Pool**
+   - `VectorDBHandlerPool.get_instance()` ensures there is only one handler pool per process. The pool tracks active/available handlers, performs async retries, and exposes stats for observability.
+
+4. **Strategy / Pluggable Backend Interface**
+   - All vector DB handlers inherit from `VectorDBBase` and expose the same async CRUD/query surface. Switching providers (Qdrant, ChromaDB, MongoDB Atlas Vector Search, PostgreSQL + pgvector) is a configuration change instead of a code change.
+
+5. **Builder + Pipeline Composition for Memory Synthesis**
+   - Dual agents (Episodic + Summarizer), conflict resolution, and synthesis agents form a deterministic pipeline that constructs Zettelkasten-style memory notes. Each step adds a layer of analysis, similar to a multi-step builder pattern.
+
+6. **Command Pattern for Daemon/CLI**
+   - CLI commands (Typer) package daemon interactions via `daemon_request`, which behaves like a command object executed by the daemon server. This keeps CLI concerns separate from execution logic.
+
+7. **Observer-like Metrics Hooks**
+   - Prometheus integration (`metrics.record_*`) acts like an observer, receiving notifications of operations, durations, and errors without entangling the business logic with the metrics backend.
+
+Highlighting these patterns helps reviewers understand how the architecture is organized and how to extend it safely (e.g., adding a new vector backend simply means implementing an abstract factory and registering it).
 

@@ -1,476 +1,896 @@
-# OmniMemory - Self-Evolving Composite Memory Synthesis Architecture
+# OmniMemory · The Living Brain for Autonomous Agents
+
+<div align="center">
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Coverage](https://img.shields.io/badge/coverage-87.69%25-green)](https://github.com/omnirexflora-labs/omnimemory)
 
-Production-ready memory framework for autonomous AI agents. OmniMemory gives your agents human-like memory capabilities - they remember, learn, and adapt just like humans do.
+**Don't just store data. Synthesize memories.**
+OmniMemory transforms static embeddings into a self-evolving cognitive substrate.
 
-## Table of Contents
+[Quick Start](#quick-start) · [CLI](#cli-tool) · [SDK](#sdk-usage-guide) · [Production](#production-deployment) · [Environment Variables](#environment-variables) · [Architecture](#architecture) · [REST API](docs/API_SPECIFICATION.md)
 
-- [Why OmniMemory?](#why-omnimemory)
-- [Quick Start](#quick-start)
-- [Memory & Multi-Tenant Architecture](#memory--multi-tenant-architecture)
-  - [How Memory Works](#how-memory-works)
-  - [Multi-Tenant Isolation](#multi-tenant-isolation)
-  - [Composite Scoring with Exponential Decay](#composite-scoring-with-exponential-decay)
-- [Integration Methods](#integration-methods)
-- [Usage Examples](#usage-examples)
-- [Configuration](#configuration)
-- [Architecture Overview](#architecture-overview)
-- [Monitoring](#monitoring)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
+</div>
+
+---
 
 ## Why OmniMemory?
 
-Traditional AI memory systems are like filing cabinets - they store information but don't understand, organize, or evolve. OmniMemory is different - it works like human cognitive memory.
+Traditional RAG is a filing cabinet: you put documents in, you take documents out.
+**OmniMemory is a living brain.**
 
-**How Human Memory Works:**
-- When you learn something new, your brain doesn't just store it - it connects it to related memories
-- Over time, similar memories merge and consolidate (you don't remember every detail of every conversation)
-- When you recall information, you don't search through everything - your brain prioritizes what's relevant, recent, and important
-- When new information contradicts old memories, your brain resolves the conflict and updates your understanding
+It doesn't just "store" messages. It employs a **Dual-Agent Synthesis** engine to interpret conversations, extract behavioral patterns, and resolve contradictions automatically. When a new memory conflicts with an old one, OmniMemory doesn't just append—it **updates**, **deletes**, or **consolidates** the knowledge graph, just like human memory.
 
-**How OmniMemory Works:**
-- **Dual-Agent Synthesis**: Two specialized agents (Episodic and Summarizer) work together to understand conversations, just like your brain uses different regions for different types of memory
-- **Self-Evolution**: Memories automatically merge, consolidate, and resolve conflicts - no manual intervention needed
-- **Composite Scoring**: Retrieval prioritizes relevance first, then considers recency and importance - exactly like human recall
-- **Memory Linking**: Related memories form connections, creating a knowledge graph that grows organically
+| Feature | Traditional Vector RAG | OmniMemory (SECMSA) |
+| :--- | :--- | :--- |
+| **Input Handling** | Naive chunking & embedding | **Dual-Agent Synthesis** (Episodic + Summarizer) |
+| **Conflict Resolution** | None (contradictions coexist) | **Self-Evolving** (Update/Delete/Skip operations) |
+| **Retrieval Logic** | Cosine similarity only | **Composite Scoring** (Relevance × [1 + Recency + Importance]) |
+| **Context Awareness** | Static text chunks | **Structured Memory Notes** (Behavior, Learnings, Guidance) |
+| **Multi-Tenancy** | Often manual filtering | **Native Isolation** (App / User / Session tiers) |
 
-**The Result:** Your AI agents remember context across conversations, learn from interactions, and adapt their understanding - just like humans do.
+## Core Features
 
-For detailed technical architecture, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+### 1. Dual-Agent Synthesis
+Two specialized agents work in parallel to process every interaction:
+*   **Episodic Agent**: Analyzes *behavior*. "User prefers concise answers," "User struggles with async concepts."
+*   **Summarizer Agent**: Analyzes *narrative*. "Project X is delayed," "Deployed v2.0 to prod."
+
+### 2. Self-Evolving Memory
+Memories aren't static. The system automatically detects conflicts between new and existing information.
+*   **UPDATE**: Merges fragmented details into a single, comprehensive note.
+*   **DELETE**: Removes outdated or contradicted information.
+*   **SKIP**: Ignores redundant inputs to keep the index clean.
+
+### 3. Composite Scoring
+We don't just return the "nearest neighbor." We return the most *useful* memory.
+```python
+Score = Relevance * (1 + Recency_Boost + Importance_Boost)
+```
+This ensures high-relevance memories always win, but recent and critical memories get the nudge they need to surface.
+
+### 4. Enterprise Multi-Tenancy
+Built for SaaS from day one.
+*   **App Level**: Physical isolation (separate collections).
+*   **User Level**: Logical isolation (metadata filtering).
+*   **Session Level**: Conversation grouping.
+
+## Supported Backends
+
+Switch providers by changing `OMNI_MEMORY_PROVIDER`. No code changes required.
+
+| Provider | Env Value | Best For |
+| :--- | :--- | :--- |
+| **Qdrant** | `qdrant-remote` | Production default. High performance, rich filtering |
+| **ChromaDB** | `chromadb-remote` | Simple deployments, local development |
+| **PostgreSQL** | `postgresql` | Teams already using Postgres (via pgvector) |
+| **MongoDB** | `mongodb` | Atlas users needing vector search + document store |
+
+## When to Use: API vs SDK
+
+### Use the REST API Server (Recommended for Production)
+**Why**: Language-agnostic. Works with **any** programming language (Node.js, Go, Rust, Java, PHP, etc.)
+
+**Best For**:
+- ✅ Production deployments
+- ✅ Multi-language teams
+- ✅ Microservices architectures
+- ✅ Need built-in metrics, health checks, connection pooling
+
+### Use the Python SDK (Dev/Prototyping)
+**Why**: Direct Python integration for rapid testing
+
+**Best For**:
+- ✅ Python-only agents
+- ✅ Local development and testing
+- ✅ Prototyping memory operations
+
+---
 
 ## Quick Start
 
-### 1. Install
+> **TL;DR**: Want to see it in action immediately?
+> ```bash
+> # Run the complete Customer Support Agent example
+> python examples/complete_sdk_example.py
+> ```
 
+### 1. Install
 ```bash
-git clone https://github.com/omnirexflora-labs/omnimemory.git
-cd omnimemory
-uv sync  # or: pip install -e .
+uv add omnimemory
+# or
+pip install omnimemory
 ```
 
 ### 2. Configure
-
-Create `.env` file:
+Create a `.env` file (templates in [`examples/env/`](examples/env)):
 ```bash
-# LLM Configuration
-LLM_API_KEY=your_llm_api_key
+# LLM & Embeddings
+LLM_API_KEY=sk-...
 LLM_PROVIDER=openai
-LLM_MODEL=gpt-4
-
-# Embedding Configuration
-EMBEDDING_API_KEY=your_embedding_api_key
+EMBEDDING_API_KEY=sk-...
 EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-large
-EMBEDDING_DIMENSIONS=3072
 
-# Qdrant (auto-configured in docker-compose)
+# Vector DB (Choose one: qdrant, chromadb, postgresql, mongodb)
 OMNI_MEMORY_PROVIDER=qdrant-remote
-QDRANT_HOST=qdrant
+QDRANT_HOST=localhost
 QDRANT_PORT=6333
 ```
 
-### 3. Start Services
+### 3. Run (Choose Your Backend)
 
+Start the vector DB and API server:
+
+#### **Qdrant** (Production Default - High Performance)
 ```bash
-docker-compose -f docker-compose.local.yml up -d
+docker compose -f docker-compose.local.yml --profile qdrant up -d
+uv run uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-### 4. Verify
-
+#### **ChromaDB** (Simple Deployments)
 ```bash
-curl http://localhost:8001/health
+docker compose -f docker-compose.local.yml --profile chromadb up -d
+uv run uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-## Memory & Multi-Tenant Architecture
-
-### How Memory Works
-
-OmniMemory creates memories through **dual-agent synthesis**: two specialized agents (Episodic and Summarizer) work in parallel to understand conversations. Episodic agent extracts behavioral patterns and interaction dynamics, while Summarizer agent creates narrative summaries and retrieval metadata. These outputs are combined into structured memory notes that are embedded and stored.
-
-**Memory Creation Paths:**
-1. **Standard Memory**: Full dual-agent synthesis with conflict resolution (rich conversational context)
-2. **Agent Memory**: Fast single-agent path (quick agent message storage)
-3. **Conversation Summary**: Standalone summarization with optional webhooks
-
-**Self-Evolution**: When new memories conflict with existing ones, AI-powered agents automatically resolve conflicts through UPDATE (consolidate), DELETE (eliminate), SKIP (preserve), or CREATE (new memory) operations. This creates evolution chains where memories link forward, forming a knowledge graph.
-
-### Multi-Tenant Isolation
-
-**Core Selling Point:** OmniMemory is built for **multi-agent, multi-user, multi-app** scenarios from day zero. Deploy one instance, serve multiple applications, users, and agents - all with complete data isolation.
-
-**Three-Tier Isolation Model:**
-
-**`app_id` (Required) - Application-Level Isolation:**
-- Each application gets its own memory collection in the vector database
-- Complete physical separation - memories from different apps are stored in different collections
-- Use case: Deploy one OmniMemory instance for "customer-support-app", "sales-assistant-app", "internal-tool-app" - all completely isolated
-- Queries always require `app_id` - you can only access memories from the specified app
-
-**`user_id` (Required) - User-Level Isolation:**
-- Identifies which user within an application owns the memory
-- Multiple users in the same app are completely isolated - user-123 can never see user-456's memories
-- Stored as metadata, used for query-time filtering
-- When you query with `user_id`, you only get that user's memories. Without it, you can search across all users in the app
-
-**`session_id` (Optional) - Session-Level Grouping:**
-- Groups related conversations together (like a support ticket or onboarding flow)
-- Stored as metadata, can be used for filtering
-- Use case: "support-ticket-789", "onboarding-session-456", "checkout-flow-123"
-- Optional - if provided, you can query memories for a specific session, or omit it to search across all sessions
-
-**Example:**
-```python
-# Multi-app: same user, different apps (completely isolated)
-await sdk.add_memory(UserMessages(app_id="support-app", user_id="user-123", ...))
-await sdk.add_memory(UserMessages(app_id="sales-app", user_id="user-123", ...))  # No data leakage
-
-# Multi-user: different users, same app (isolated by user_id)
-await sdk.add_memory(UserMessages(app_id="support-app", user_id="user-123", ...))
-await sdk.add_memory(UserMessages(app_id="support-app", user_id="user-456", ...))  # Isolated
-
-# Query with filters
-results = await sdk.query_memory(
-    app_id="support-app",
-    user_id="user-123",  # Optional: filter to specific user
-    session_id="ticket-789",  # Optional: filter to specific session
-    query="..."
-)
-```
-
-**Data Isolation Guarantees:**
-- Different apps = different collections (physical separation)
-- Different users = metadata filtering (logical separation)
-- Different sessions = metadata filtering (logical separation)
-- No data leakage possible - system enforces isolation at storage and query level
-
-For detailed isolation guarantees, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#multi-tenant-architecture-and-data-isolation).
-
-### Composite Scoring with Exponential Decay
-
-OmniMemory uses **composite scoring** to rank memories during retrieval, just like human recall prioritizes relevant, recent, and important information.
-
-**Formula:** `composite_score = relevance × (1 + recency_boost + importance_boost)`
-
-**How It Works:**
-- **Relevance** (primary): Semantic similarity from vector search - always the base score
-- **Recency Boost**: Uses exponential decay - recent memories get a small boost that decreases over time
-- **Importance Boost**: Content significance signal - important memories get a small boost
-- **Max boosts**: Each boost capped at 10% to ensure relevance remains primary
-
-**Why Exponential Decay for Recency?**
-- Recent memories are naturally more accessible (like human recall)
-- Exponential decay ensures the boost decreases smoothly over time
-- Very old memories get no recency boost, but can still rank high if highly relevant
-- This prevents temporally recent but semantically irrelevant memories from dominating results
-
-**Example:** A memory from yesterday with 0.7 relevance might score 0.77 (with 10% recency boost), while a memory from last month with 0.8 relevance scores 0.8 (no recency boost). The more relevant memory still wins, but recent memories get a helpful nudge.
-
-For mathematical foundations and proofs, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#composite-scoring-function).
-
-## Integration Methods
-
-### REST API (Recommended for Production)
-
-Deploy once, call from any language. Best for production deployments.
-
+#### **PostgreSQL** (Existing Postgres Users)
 ```bash
-# Deploy
-docker-compose -f docker-compose.local.yml up -d
-
-# Use from any language
-curl -X POST http://localhost:8001/api/v1/memories \
-  -H "Content-Type: application/json" \
-  -d '{"app_id": "my-app", "user_id": "user-123", "messages": [...]}'
+docker compose -f docker-compose.local.yml --profile pgvector up -d
+uv run uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-**Interactive API Docs:** http://localhost:8001/docs
+#### **MongoDB** (Configure MongoDB Atlas separately)
+```bash
+# Set MONGO_URI in .env first
+uv run uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
+```
 
-### Python SDK (Best for Python Codebases)
-
-Direct integration into your Python application.
-
+### 4. Use (Python SDK)
 ```python
 from omnimemory.sdk import OmniMemorySDK
 from omnimemory.core.schemas import UserMessages, Message
+import asyncio
 
 async def main():
     sdk = OmniMemorySDK()
-    await sdk.warm_up()  # Always warm up first!
     
-    # Create memory
-    user_messages = UserMessages(
+    # CRITICAL: Initialize connection pools
+    if not await sdk.warm_up():
+        print("Failed to warm up SDK")
+        return
+
+    # Add a memory (returns a background task ID)
+    response = await sdk.add_memory(UserMessages(
         app_id="my-app",
         user_id="user-123",
-        session_id="session-456",
         messages=[
-            Message(role="user", content="...", timestamp="2024-01-15T10:00:00Z"),
-            Message(role="assistant", content="...", timestamp="2024-01-15T10:00:05Z")
-            # ... must provide exactly OMNIMEMORY_DEFAULT_MAX_MESSAGES (default: 30) messages
-        ]
-    )
-    result = await sdk.add_memory(user_messages)
+            Message(role="user", content="I'm building a Python web scraper."),
+            Message(role="assistant", content="I can help with libraries like BeautifulSoup.")
+        ] * 5 # Need sufficient context (default 10 messages)
+    ))
     
-    # Query memories
+    task_id = response["task_id"]
+    print(f"Memory processing started. Task ID: {task_id}")
+    
+    # Fire-and-Forget: Memory processes in background
+    # No need to poll - check logs if debugging needed
+    await asyncio.sleep(3)  # Give it time to process
+
+    # Query memory (semantic search)
     results = await sdk.query_memory(
         app_id="my-app",
-        query="Python async",
         user_id="user-123",
-        n_results=5,
-        similarity_threshold=0.35  # Optional: override default recall threshold
+        session_id="session-123", # Optional
+        n_results=1, # Optional
+        similarity_threshold=0.7, # Optional
+        query="What is the user working on?"
     )
+    
+    print(results[0]['memory_note']) 
+    # Output: "User is developing a Python-based web scraper..."
 
 asyncio.run(main())
 ```
 
-### CLI (Testing Only)
+### 5. Quick Test Examples
 
-For testing and development only - not for production.
+Want to see it in action? We provide complete, real-world examples for both SDK and API usage.
+
+**Run the SDK Example:**
+```bash
+# Demonstrates full customer support workflow with memory batching
+python examples/complete_sdk_example.py
+```
+
+**Run the API Example:**
+```bash
+# Requires running server (uv run uvicorn omnimemory.api.server:app --port 8001)
+python examples/complete_api_example.py
+```
+
+---
+
+## Production Features
+
+**Fully Asynchronous**: O(1) latency from user perspective. Memory synthesis happens in **fire-and-forget** background tasks. No polling needed - check logs if debugging required.
+
+**Connection Pooling**: Configurable pool size (default 10) for high concurrency workloads.
+
+**Metrics & Observability**: Prometheus-compatible metrics at `http://localhost:9001/metrics` (enable with `OMNIMEMORY_ENABLE_METRICS_SERVER=true`).
+
+**Multi-Tenancy**: 3-tier isolation (app/user/session) for SaaS deployments. Complete data separation.
+
+**89.58% Test Coverage**: Production-grade reliability with comprehensive test suite.
+
+**Language Agnostic**: REST API works with any language. Python SDK provided for convenience.
+
+---
+
+## Agent Memory SDK
+
+**For Agents That Need to Answer Questions Using Stored Memories**
+
+The `AgentMemorySDK` provides a complete "query memory + generate answer" loop. It retrieves relevant memories and calls your LLM with context to generate grounded responses.
+
+```python
+from omnimemory import AgentMemorySDK
+
+agent_sdk = AgentMemorySDK()
+
+response = await agent_sdk.answer_query(
+    app_id="my-app-id-1234",
+    query="What does the user prefer?",
+    user_id="user-123456", # Optional
+    session_id="session-123456", # Optional
+    n_results=5, # Optional
+    similarity_threshold=0.7 # Optional
+)
+
+print(response["answer"])  # LLM-generated answer
+print(f"Based on {len(response['memories'])} memories")
+```
+
+**Use When**: Your agent needs to answer user questions using stored memories.
+
+**Not For**: Storing new memories (use `OmniMemorySDK.add_memory` or `add_agent_memory` for that).
+
+---
+
+## CLI Tool
+
+OmniMemory includes a powerful command-line interface for quick operations and testing:
 
 ```bash
-omnimemory memory add --app-id my-app --user-id user-123 messages.json
-omnimemory memory query --app-id my-app --query "Python async"
+# Install
+uv add omnimemory
+
+# Get help
+omnimemory --help
+
+# Start daemon for background operations
+omnimemory daemon start
+
+# Add memory
+omnimemory memory add \
+  --app-id "myapp-1234567890" \
+  --user-id "user-1234567890" \
+  --message "user:I prefer dark mode" \
+  --message "assistant:Noted, I'll remember that"
+
+# Query memory
+omnimemory memory query \
+  --app-id "myapp-1234567890" \
+  --query "user preferences"
+
+# Check system health
+omnimemory health
+
+# View comprehensive feature guide
+omnimemory info
+
+# Daemon management
+omnimemory daemon status
+omnimemory daemon stop
 ```
 
-## Usage Examples
+**Available Commands**:
+- `omnimemory memory` - Memory operations (add, query, get, delete)
+- `omnimemory memory batch` - Batch message operations
+- `omnimemory daemon` - Background daemon management
+- `omnimemory agent` - Agent-specific operations
+- `omnimemory health` - System health diagnostics
+- `omnimemory info` - Feature overview
 
-### Create Memory
+For detailed CLI documentation, run `omnimemory --help`.
 
-**Standard Memory** (full dual-agent synthesis with conflict resolution):
+---
+
+## SDK Usage Guide
+
+> **Note**: This guide covers the Python SDK. For the HTTP REST API, see [API_SPECIFICATION.md](docs/API_SPECIFICATION.md).
+
+### Initialization
+
+**CRITICAL**: You must warm up the connection pools before making requests.
+
+**Why**: Initializes vector DB connections for low latency on first request.
+
 ```python
-user_messages = UserMessages(
-    app_id="my-app",
-    user_id="user-123",
-    session_id="session-456",
+from omnimemory.sdk import OmniMemorySDK
+
+sdk = OmniMemorySDK()
+success = await sdk.warm_up()
+if not success:
+    print("Failed to initialize connections")
+```
+
+---
+
+## Core Memory Operations
+
+### 1. Add Memory (`add_memory`)
+
+**Use Case**: Primary engine for conversation analysis with **Dual-Agent Synthesis**.
+
+**Why**: Needs a flow of conversation (default 10 messages) to understand context. The Episodic and Summarizer agents extract behavioral patterns and resolve conflicts. Single messages won't work.
+
+**Parameters**:
+- `user_message: UserMessages` - Contains `app_id`, `user_id`, `session_id` (optional), `messages` (list of Message objects)
+- `messages` must have exactly `OMNIMEMORY_DEFAULT_MAX_MESSAGES` (default 10)
+
+**Returns**: Task ID immediately (async processing)
+
+```python
+from omnimemory.core.schemas import UserMessages, Message
+
+response = await sdk.add_memory(UserMessages(
+    app_id="my-app-id-1234",
+    user_id="user-123456",
+    session_id="session-789",  # Optional
     messages=[
-        Message(role="user", content="I need help with Python", timestamp="2024-01-15T10:00:00Z"),
-        Message(role="assistant", content="I can help!", timestamp="2024-01-15T10:00:05Z")
-        # ... must provide exactly OMNIMEMORY_DEFAULT_MAX_MESSAGES (default: 30) messages
+        Message(role="user", content="I prefer dark mode"),
+        Message(role="assistant", content="Noted, I'll remember that")
+        # ... total 10 messages required
     ]
-)
-result = await sdk.add_memory(user_messages)
+))
+task_id = response["task_id"]
+print(f"Processing in background: {task_id}")
 ```
 
-**Important:** `add_memory()` requires exactly `OMNIMEMORY_DEFAULT_MAX_MESSAGES` messages (default: 30). This ensures sufficient conversation flow for meaningful memory synthesis.
+### 2. Add Agent Memory (`add_agent_memory`)
 
-**Agent Memory** (fast path, no conflict resolution):
+**Use Case**: **Agent Tool** for quick saves.
+
+**Why**: When your agent learns new info or user says "save this," the agent calls this directly. Accepts **both structured and unstructured** messages. Bypasses conflict resolution for speed.
+
+**Best Practice**: Add to agent system prompt as a tool.
+
+**Parameters**:
+- `agent_request: AgentMemoryRequest` - Contains `app_id`, `user_id`, `session_id` (optional), `messages` (string or list)
+
+**Returns**: Task ID immediately
+
 ```python
-agent_request = AgentMemoryRequest(
-    app_id="my-app",
-    user_id="user-123",
-    messages="Agent completed task: analyzed user preferences"  # String or list format
-)
-result = await sdk.add_agent_memory(agent_request)
+from omnimemory.core.schemas import AgentMemoryRequest
+
+# Unstructured (string)
+response = await sdk.add_agent_memory(AgentMemoryRequest(
+    app_id="my-app-id-1234",
+    user_id="user-123456",
+    messages="User completed premium signup and selected annual plan"
+))
+
+# Structured (list)
+response = await sdk.add_agent_memory(AgentMemoryRequest(
+    app_id="my-app-id-1234",
+    user_id="user-123456",
+    messages=[
+        {"role": "user", "content": "What's my email?"},
+        {"role": "assistant", "content": "It's user@example.com"}
+    ]
+))
 ```
 
-### Query Memories
+### 3. Query Memory (`query_memory`)
+
+**Use Case**: Retrieve memories using semantic search and composite scoring.
+
+**How**: Uses Relevance × (1 + Recency + Importance) scoring.
+
+**Parameters**:
+- `app_id: str` (required)
+- `query: str` (required) - Natural language query
+- `user_id: str` (optional) - Filter by user
+- `session_id: str` (optional) - Filter by session
+- `n_results: int` (optional, default from env) - Max results to return
+- `similarity_threshold: float` (optional, default from env) - Min similarity (0.0-1.0). **Overrides** `OMNIMEMORY_RECALL_THRESHOLD` env var.
+
+**Returns**: List of memory dictionaries
 
 ```python
 results = await sdk.query_memory(
-    app_id="my-app",
-    query="Python async await",
-    user_id="user-123",  # Optional: filter to user
-    session_id="session-456",  # Optional: filter to session
-    n_results=5,
-    similarity_threshold=0.35  # Optional: override default recall threshold
+    app_id="my-app-id-1234",
+    query="What does the user like?",
+    user_id="user-123456",          # Optional
+    session_id="session-789",       # Optional
+    n_results=10,                   # Optional (default 5)
+    similarity_threshold=0.75       # Optional (overrides env default 0.3)
 )
 
 for memory in results:
+    print(memory["document"])
     print(f"Score: {memory['composite_score']}")
-    print(f"Memory: {memory['memory_note']}")
 ```
 
-**Query Parameters:**
-- `similarity_threshold` (optional): Overrides `OMNIMEMORY_RECALL_THRESHOLD` from environment or default. Use this to adjust recall per-query without changing global settings.
+### 4. Get Memory (`get_memory`)
 
-### Conversation Summary
+**Use Case**: Retrieve a single memory by its ID.
+
+**Why**: When you have a memory ID from a previous operation and need full content.
+
+**Parameters**:
+- `memory_id: str` (required)
+- `app_id: str` (required)
+
+**Returns**: Memory dict or None
 
 ```python
-summary_request = ConversationSummaryRequest(
-    app_id="my-app",
-    user_id="user-123",
-    messages="User: Hello\nAssistant: Hi there!"  # String or list format
+memory = await sdk.get_memory(
+    memory_id="uuid-1234-5678",
+    app_id="my-app-id-1234"
 )
-summary = await sdk.summarize_conversation(summary_request)
-print(summary['summary'])
+if memory:
+    print(memory["document"])
 ```
 
-### Memory Evolution
+### 5. Delete Memory (`delete_memory`)
+
+**Use Case**: Manual memory deletion (GDPR, cleanup).
+
+**Why**: User requests deletion or you need to remove test data.
+
+**Parameters**:
+- `app_id: str` (required)
+- `doc_id: str` (required) - Document ID to delete
+
+**Returns**: Boolean (success/failure)
 
 ```python
-# Traverse evolution chain
+success = await sdk.delete_memory(
+    app_id="my-app-id-1234",
+    doc_id="uuid-1234-5678"
+)
+if success:
+    print("Memory deleted")
+```
+
+---
+
+## Summarization
+
+### Summarize Conversation (`summarize_conversation`)
+
+**Use Case**: **Context Window Management**.
+
+**Why**: When working memory is full, generate a summary, save it, delete old messages to free tokens.
+
+**Accepts**: Both structured and unstructured messages.
+
+**Two Modes**:
+
+#### Sync Mode (No `callback_url`)
+- **Returns**: Summary immediately
+- **Processing**: Fast (`use_fast_path=True`)
+- **Use When**: Real-time responses needed, short contexts
+
+```python
+from omnimemory.core.schemas import ConversationSummaryRequest
+
+summary = await sdk.summarize_conversation(ConversationSummaryRequest(
+    app_id="my-app-id-1234",
+    user_id="user-123456",
+    messages=[...]  # Structured or unstructured
+))
+print(summary["content"])
+print(summary["delivery"])  # "sync"
+```
+
+#### Webhook Mode (With `callback_url`)
+- **Returns**: Task ID immediately
+- **Processing**: Full structured summary (`use_fast_path=False`)
+- **Delivery**: POSTs result to your webhook URL
+- **Retry**: 3 attempts with exponential backoff
+- **Use When**: Long conversations, background processing, need auto-replacement
+
+**Parameters**:
+- `summary_request: ConversationSummaryRequest`
+  - `app_id: str` (required)
+  - `user_id: str` (required)
+  - `session_id: str` (optional)
+  - `messages: str | list` (required)
+  - `callback_url: str` (optional) - If provided, enables webhook mode
+  - `callback_headers: dict` (optional) - Custom headers for webhook (e.g., auth)
+
+```python
+response = await sdk.summarize_conversation(ConversationSummaryRequest(
+    app_id="my-app-id-1234",
+    user_id="user-123456",
+    messages=[...],  # Long conversation
+    callback_url="https://api.myapp.com/webhooks/summary",
+    callback_headers={"Authorization": "Bearer token123"}
+))
+print(response["task_id"])
+print(response["status"])  # "accepted"
+```
+
+---
+
+## Batching
+
+### Memory Batcher (`memory_batcher_add_message`)
+
+**Use Case**: Streaming chat loops.
+
+**Why**: Automatically buffers messages and calls `add_memory` when limit is reached. No manual counting.
+
+**How**: Non-blocking. Monitors message count per `(app_id, user_id, session_id)` tuple. When it hits `OMNIMEMORY_DEFAULT_MAX_MESSAGES` (default 10), auto-flushes.
+
+**Parameters**:
+- `app_id: str` (required)
+- `user_id: str` (required)
+- `session_id: str` (optional)
+- `role: str` (required) - "user", "assistant", "system"
+- `content: str` (required)
+
+```python
+# In your chat loop
+for message in stream:
+    await sdk.memory_batcher_add_message(
+        app_id="my-app-id-1234",
+        user_id="user-123456",
+        role=message.role,
+        content=message.content
+    )
+    # SDK handles auto-flush at 10 messages
+```
+
+---
+
+## Evolution & Auditing
+
+### 1. Traverse Evolution Chain (`traverse_memory_evolution_chain`)
+
+**Use Case**: See how a memory evolved over time.
+
+**Why**: Memories update, delete, merge. This traces the full history.
+
+**How**: Follows `next_id` pointers from original to final memory.
+
+**Parameters**:
+- `app_id: str` (required)
+- `memory_id: str` (required) - Starting memory ID
+
+**Returns**: List of memories in chronological order
+
+```python
 chain = await sdk.traverse_memory_evolution_chain(
-    app_id="my-app",
-    memory_id="memory-uuid"
+    app_id="my-app-id-1234",
+    memory_id="original-uuid-1234"
 )
+print(f"Memory evolved {len(chain)} times")
+for memory in chain:
+    print(f"{memory['metadata']['status']} - {memory['document'][:50]}")
+```
 
-# Generate visualization
-graph = sdk.generate_evolution_graph(chain, format="mermaid")
+### 2. Generate Evolution Graph (`generate_evolution_graph`)
+
+**Use Case**: Visualize evolution chain.
+
+**Formats**: `mermaid`, `dot`, `html`
+
+**Parameters**:
+- `chain: List[Dict]` (required) - Output from `traverse_memory_evolution_chain`
+- `format: str` (required) - "mermaid", "dot", or "html"
+
+```python
+chain = await sdk.traverse_memory_evolution_chain(...)
+
+# Mermaid (for docs)
+mermaid = sdk.generate_evolution_graph(chain, format="mermaid")
+print(mermaid)
+
+# HTML (for browser visualization)
+html = sdk.generate_evolution_graph(chain, format="html")
+with open("evolution.html", "w") as f:
+    f.write(html)
+```
+
+### 3. Generate Evolution Report (`generate_evolution_report`)
+
+**Use Case**: Detailed analysis of memory changes.
+
+**Formats**: `markdown`, `text`, `json`
+
+**Parameters**:
+- `chain: List[Dict]` (required)
+- `format: str` (required) - "markdown", "text", or "json"
+
+```python
 report = sdk.generate_evolution_report(chain, format="markdown")
+print(report)  # Includes stats, timeline, insights
 ```
 
-**Message Format Notes:**
-- `add_memory()` requires structured `Message` objects (role, content, timestamp)
-- `add_agent_memory()` and `summarize_conversation()` accept flexible format (string or list)
+---
 
-## Configuration
+## System & Monitoring
 
-### Essential Environment Variables
+### Connection Pool Stats (`get_connection_pool_stats`)
 
-**LLM Configuration:**
-- `LLM_API_KEY` (required): Your LLM API key
-- `LLM_PROVIDER` (required): Provider (openai, anthropic, etc.)
-- `LLM_MODEL` (required): Model name (gpt-4, claude-3-opus, etc.)
-- `LLM_TEMPERATURE` (default: 0.4): Temperature for LLM calls
-- `LLM_MAX_TOKENS` (default: 3000): Maximum tokens per response
+**Use Case**: Production monitoring and debugging.
 
-**Embedding Configuration:**
-- `EMBEDDING_API_KEY` (required): Your embedding API key
-- `EMBEDDING_PROVIDER` (required): Provider (openai, cohere, etc.)
-- `EMBEDDING_MODEL` (required): Model name
-- `EMBEDDING_DIMENSIONS` (required): Dimensions (1536, 3072, etc.)
+**Why**: If queries are slow, check if you're hitting connection limits.
 
-**Qdrant Connection:**
-- `OMNI_MEMORY_PROVIDER` (default: qdrant-remote): Provider type
-- `QDRANT_HOST` (default: localhost): Qdrant host
-- `QDRANT_PORT` (default: 6333): Qdrant port
+**Returns**: Dict with pool metrics
 
-**OmniMemory Hyperparameters:**
-- `OMNIMEMORY_DEFAULT_MAX_MESSAGES` (default: 30): Fixed limit - exactly this many messages required per memory creation
-- `OMNIMEMORY_RECALL_THRESHOLD` (default: 0.3): Minimum similarity for recall (0.0-1.0), can be overridden per-query
-- `OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD` (default: 0.4): Minimum composite score for precision (0.0-1.0)
-- `OMNIMEMORY_DEFAULT_N_RESULTS` (default: 10): Default number of query results
-- `OMNIMEMORY_LINK_THRESHOLD` (default: 0.7): Minimum score for memory linking (0.0-1.0)
-- `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS` (default: 10): Connection pool size
+```python
+stats = await sdk.get_connection_pool_stats()
+print(f"Active: {stats['active_handlers']}/{stats['max_connections']}")
+print(f"Available: {stats['available_handlers']}")
+```
 
-### Hyperparameter Tuning
+---
 
-**`OMNIMEMORY_DEFAULT_MAX_MESSAGES`** - Fixed message limit per memory creation
-- **Default: 30** - Ensures sufficient conversation flow for meaningful memory synthesis
-- **Important:** This is a fixed limit, not a range. You must provide exactly this many messages
-- **Why 30?** Provides enough context for dual-agent synthesis while keeping memory creation efficient
-- **Warning:** Don't set too high (e.g., >50). Higher values consume more LLM context length, slow down processing, and may exceed token limits. Keep it balanced for your use case
-- **Adjust if:** Need more context per memory (increase carefully) or want faster processing (decrease)
+## Configuration & Tuning
 
-**`OMNIMEMORY_RECALL_THRESHOLD`** - Controls initial candidate retrieval
-- Lower (0.1-0.2): More candidates, broader recall, may include less relevant results
-- Higher (0.4-0.5): Fewer candidates, tighter recall, only highly similar memories
-- **Adjust if:** Getting too many irrelevant results (increase) or missing relevant memories (decrease)
-- **Note:** Can be overridden per-query using `similarity_threshold` parameter
+Tune these hyperparameters in your `.env` file to optimize for your specific use case.
 
-**`OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD`** - Controls final result filtering
-- Lower (0.2-0.3): More results pass filter, includes lower-quality matches
-- Higher (0.5-0.6): Stricter filtering, only high-quality results
-- **Adjust if:** Final results contain low-quality matches (increase) or high-quality memories filtered out (decrease)
+| Parameter | Default | Description | Tuning Guide |
+| :--- | :--- | :--- | :--- |
+| `OMNIMEMORY_RECALL_THRESHOLD` | `0.3` | Minimum cosine similarity for initial retrieval from Vector DB. | Lower to `0.2` for broader recall (more noise); raise to `0.5` for stricter relevance. |
+| `OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD` | `0.5` | Minimum *final* score (Relevance × Boosts) to return a memory. | Raise to `0.6+` if you only want high-confidence memories. Lowering it may return less relevant but "important" or "recent" memories. |
+| `OMNIMEMORY_LINK_THRESHOLD` | `0.7` | Similarity required to "link" memories for conflict resolution. | Lower to `0.6` to trigger evolution/updates more often. Raise to `0.8` to reduce "noise" and only link very similar topics. |
+| `OMNIMEMORY_DEFAULT_MAX_MESSAGES` | `10` | Number of messages required for `add_memory`. | Match this to your LLM's context window preference. Too low = poor synthesis; Too high = context bloat. |
+| `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS` | `10` | Max concurrent DB connections. | Reduce to `3-5` for low-resource environments (e.g., local dev). Increase for high-throughput production. |
 
-**`OMNIMEMORY_LINK_THRESHOLD`** - Controls memory linking and consolidation
-- Lower (0.5-0.6): More memories linked, more consolidation
-- Higher (0.8-0.9): Fewer links, more independent memories
-- **Adjust if:** Memories incorrectly consolidated (increase) or related memories not linked (decrease)
+---
 
-**`OMNIMEMORY_DEFAULT_N_RESULTS`** - Controls number of results returned
-- Lower (5-8): Faster queries, fewer results
-- Higher (15-20): More results, slower queries
-- **Adjust if:** Need more context (increase) or queries too slow (decrease)
+## Environment Variables
 
-For complete configuration details, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration).
+### Required Variables
 
-## Architecture Overview
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `LLM_API_KEY` | LLM provider API key | `sk-...` |
+| `LLM_PROVIDER` | LLM provider name | `openai`, `anthropic`, `mistral` |
+| `EMBEDDING_API_KEY` | Embedding provider API key | `sk-...` |
+| `EMBEDDING_PROVIDER` | Embedding provider | `openai` |
+| `OMNI_MEMORY_PROVIDER` | Vector DB backend | `qdrant-remote`, `chromadb-remote`, `postgresql`, `mongodb` |
 
-OmniMemory implements the **Self-Evolving Composite Memory Synthesis Architecture (SECMSA)**:
+### LLM Configuration
 
-**Core Principles:**
-- **Dual-Agent Construction**: Episodic and Summarizer agents work in parallel (like different brain regions)
-- **Composite Scoring**: `relevance × (1 + recency_boost + importance_boost)` - relevance first, just like human recall
-- **Self-Evolution**: Memories automatically merge, resolve conflicts, and adapt (like memory consolidation)
-- **Memory Linking**: Related memories form connections (like associative memory)
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LLM_MODEL` | - | Model name (e.g., `gpt-4`, `claude-3-opus`) |
+| `LLM_TEMPERATURE` | `0.4` | Creativity (0.0-2.0) |
+| `LLM_MAX_TOKENS` | `3000` | Max response tokens |
+| `LLM_TOP_P` | `0.9` | Nucleus sampling |
 
-**Memory Creation Paths:**
-1. **Standard Memory**: Full dual-agent synthesis with conflict resolution (rich conversational context)
-2. **Agent Memory**: Fast single-agent path (quick agent message storage)
-3. **Conversation Summary**: Standalone summarization with optional webhooks
+### Embedding Configuration
 
-**Performance:**
-- O(1) user-perceived latency (async background processing)
-- O(log n) vector search + O(k) composite scoring for queries
-- Connection pooling and embedding caching for efficiency
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `EMBEDDING_MODEL` | - | Embedding model name |
+| `EMBEDDING_DIMENSIONS` | - | Vector dimensions |
+| `EMBEDDING_ENCODING_FORMAT` | `base64` | Response encoding format |
+| `EMBEDDING_TIMEOUT` | `600` | Request timeout (seconds) |
 
-For comprehensive architecture documentation, mathematical foundations, and proofs, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+### Vector Database
 
-## Monitoring
+**Qdrant**:
+- `QDRANT_HOST` - Qdrant server host
+- `QDRANT_PORT` - Qdrant port (default 6333)
 
-### Health Check
+**ChromaDB**:
+- `CHROMA_HOST` - ChromaDB server host
+- `CHROMA_PORT` - ChromaDB port (default 8000)
+- `CHROMA_AUTH_TOKEN` - Authentication token
+- `CHROMA_CLIENT_TYPE` - Client type (`remote` for server)
+
+**PostgreSQL**:
+- `POSTGRES_URI` - Full connection string (e.g., `postgresql://user:pass@host:5432/db`)
+
+**MongoDB**:
+- `MONGO_URI` - MongoDB Atlas connection string
+
+### Observability
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `OMNIMEMORY_ENABLE_METRICS_SERVER` | `false` | Enable Prometheus metrics endpoint |
+| `OMNIMEMORY_METRICS_PORT` | `9001` | Metrics HTTP server port |
+| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_DIR` | `./logs` | Log file directory path |
+
+---
+
+## Production Deployment
+
+### Step 1: Prepare Environment Variables
+
+Create a `.env` file with all required configuration:
 
 ```bash
-curl http://localhost:8001/health
+# LLM Configuration (Required)
+LLM_API_KEY=your-api-key-here
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4
+LLM_TEMPERATURE=0.4
+LLM_MAX_TOKENS=3000
+
+# Embedding Configuration (Required)
+EMBEDDING_API_KEY=your-api-key-here
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIMENSIONS=1536
+
+# Vector Database (Choose one)
+OMNI_MEMORY_PROVIDER=qdrant-remote
+QDRANT_HOST=your-qdrant-host.com
+QDRANT_PORT=6333
+
+# OmniMemory Hyperparameters (Optional - tune for your use case)
+OMNIMEMORY_DEFAULT_MAX_MESSAGES=10
+OMNIMEMORY_RECALL_THRESHOLD=0.3
+OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=0.4
+OMNIMEMORY_LINK_THRESHOLD=0.8
+OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS=10
+
+# Metrics & Observability (Optional)
+OMNIMEMORY_ENABLE_METRICS_SERVER=true
+OMNIMEMORY_METRICS_PORT=9001
+LOG_LEVEL=INFO
 ```
 
-### Connection Pool Stats
+### Step 2: Deploy with Docker Compose
 
 ```bash
-curl http://localhost:8001/api/v1/system/pool-stats
+# Start with your chosen backend
+docker compose -f docker-compose.local.yml --profile qdrant up -d
 ```
 
-### Prometheus Metrics
+### Step 3: Production Hardening
 
-Enable with `OMNIMEMORY_ENABLE_METRICS_SERVER=true`, then access:
+> ⚠️ **CRITICAL SECURITY WARNING**: The provided `docker-compose.local.yml` is designed for **local development only**. For production deployments, you **MUST** implement the following security measures:
+
+#### 1. Enable HTTPS
+
+Add a reverse proxy (nginx, Traefik, or Caddy) with SSL certificates:
+
+```yaml
+# Add to your docker-compose
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - api-qdrant
 ```
-http://localhost:9001/metrics
-```
 
-Key metrics:
-- `omnimemory_operations_total`: Operation counts
-- `omnimemory_operations_duration_seconds`: Operation duration
-- `omnimemory_operations_errors_total`: Error counts
-- `omnimemory_connection_pool_size`: Pool size
-- `omnimemory_connection_pool_active`: Active connections
+#### 2. Implement Authentication
 
-## Troubleshooting
+- Use API keys in request headers
+- Implement OAuth 2.0 or JWT tokens
+- Configure authentication middleware in nginx/Traefik
 
-**Connection Pool Exhaustion**
-- Increase `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS`
-- Check for connection leaks
-
-**Slow Queries**
-- Check Qdrant performance
-- Adjust similarity thresholds
-- Reduce `OMNIMEMORY_DEFAULT_N_RESULTS`
-
-**LLM API Errors**
-- Verify API keys
-- Check rate limits
-- Adjust `LLM_MAX_TOKENS` if responses too long
-
-**SDK Warm-up**
-- Always call `await sdk.warm_up()` after initialization
-- Without warm-up, first request takes 2-5 seconds
-
-For detailed troubleshooting, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#critical-review-and-design-decisions).
-
-## Development
+#### 3. Use Secrets Management
 
 ```bash
-# Run tests
-pytest
-
-# Format code
-ruff format .
-
-# Lint code
-ruff check .
-
-# Run API server locally
-uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
+# Don't use .env files in production
+# Use Docker secrets or cloud provider secrets management
+docker secret create llm_api_key ./llm_key.txt
+docker secret create embedding_api_key ./embedding_key.txt
 ```
 
-## Support
+#### 4. Network Security
 
-- **Architecture Documentation**: [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- **API Documentation**: http://localhost:8001/docs (when server is running)
-- **Issues**: [GitHub Issues](https://github.com/omnirexflora-labs/omnimemory/issues)
+```bash
+# Configure firewall to only expose necessary ports:
+# - 443 (HTTPS) - public facing
+# - 6333 (Qdrant) - internal network only
+# - 9001 (Metrics) - internal network only
+
+# Example: UFW firewall rules
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+#### 5. Enable Monitoring
+
+```bash
+# Start with monitoring profile for Prometheus + Grafana
+docker compose -f docker-compose.local.yml \
+  --profile qdrant \
+  --profile monitoring up -d
+
+# Access Grafana at http://localhost:3000 (default: admin/admin)
+# Access Prometheus at http://localhost:9090
+# Configure alerts and dashboards for production monitoring
+```
+
+#### 6. Backup & Disaster Recovery
+
+- Configure automated backups for your vector database
+- Test recovery procedures regularly
+- Use persistent volumes for data
+
+---
+
+## Development & Testing
+
+### Running Tests
+
+```bash
+# Install development dependencies
+uv sync
+
+# Run all tests
+uv run pytest
+
+# Run with coverage report
+uv run pytest --cov=src/omnimemory --cov-report=html
+
+# View coverage report
+open htmlcov/index.html
+```
+
+**Current Test Coverage**: 89.58%
+
+### Running Locally
+
+```bash
+# Start vector database
+docker compose -f docker-compose.local.yml --profile qdrant up -d
+
+# Run API server in development mode
+uv run uvicorn omnimemory.api.server:app --host 0.0.0.0 --port 8001 --reload
+
+# Or use the provided script
+python run_api_server.py
+```
+
+---
+
+## Architecture
+
+OmniMemory implements the **Self-Evolving Composite Memory Synthesis Architecture (SECMSA)**.
+
+For comprehensive architecture documentation:
+
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Deep dive into SECMSA, mathematical foundations, scoring algorithms, conflict resolution, and design decisions
+- **[C4_ARCHITECTURE.md](docs/C4_ARCHITECTURE.md)** - Visual system architecture with PlantUML diagrams:
+  - Level 1: System Context
+  - Level 2: Container Diagram
+  - Level 3: Component Diagram
+  - Level 4: Code Structure
+  - Sequence diagrams for memory creation and retrieval flows
+
+---
+
+
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+1.  Clone: `git clone https://github.com/omnirexflora-labs/omnimemory`
+2.  Sync: `uv sync --group dev`
+3.  Test: `uv run pytest`
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT © [OmniRexFlora Labs](https://github.com/omnirexflora-labs)

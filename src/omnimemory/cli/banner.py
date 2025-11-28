@@ -2,13 +2,19 @@
 Dynamic banner generator that measures ASCII art and creates properly fitted box
 """
 
+from typing import Iterable
 import unicodedata
 
 
-def create_omnimemory_banner():
-    """Generate OMNIMEMORY banner with properly measured box"""
+def create_omnimemory_banner() -> str:
+    """
+    Generate OMNIMEMORY banner with properly measured box.
 
-    ascii_lines = [
+    Returns:
+        Rich-formatted string representing the centered OmniMemory banner.
+    """
+
+    ascii_lines: Iterable[str] = [
         "  ██████╗ ███╗   ███╗███╗   ██╗██╗███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ██╗   ██╗",
         " ██╔═══██╗████╗ ████║████╗  ██║██║████╗ ████║██╔════╝████╗ ████║██╔═══██╗██╔══██╗╚██╗ ██╔╝",
         " ██║   ██║██╔████╔██║██╔██╗ ██║██║██╔████╔██║█████╗  ██╔████╔██║██║   ██║██████╔╝ ╚████╔╝ ",
@@ -21,8 +27,16 @@ def create_omnimemory_banner():
     description = "Advanced Memory Management System for Autonomous AI Agents"
     features = "Dual-Agent Construction • Asynchronous Processing • Self-Evolving Conflict Resolution"
 
-    def display_width(text):
-        """Calculate actual terminal display width"""
+    def display_width(text: str) -> int:
+        """
+        Calculate Unicode-aware terminal display width.
+
+        Args:
+            text: Candidate string whose rendered width is needed.
+
+        Returns:
+            Width in monospace terminal cells.
+        """
         width = 0
         for char in text:
             if unicodedata.east_asian_width(char) in ("F", "W"):
@@ -50,8 +64,17 @@ def create_omnimemory_banner():
     bottom_border = "╚" + "═" * box_inner_width + "╝"
     empty_line = "║" + " " * box_inner_width + "║"
 
-    def create_centered_line(text, style=""):
-        """Create a centered line with proper padding"""
+    def create_centered_line(text: str, style: str = "") -> str:
+        """
+        Create a centered line with proper padding.
+
+        Args:
+            text: Raw text to center within the banner.
+            style: Optional Rich markup style tag.
+
+        Returns:
+            Rich markup string representing the centered line.
+        """
         text_width = display_width(text)
         total_padding = box_inner_width - text_width
         left_pad = total_padding // 2
@@ -88,14 +111,3 @@ def create_omnimemory_banner():
 
 
 OMNIMEMORY_BANNER = create_omnimemory_banner()
-
-if __name__ == "__main__":
-    try:
-        from rich.console import Console
-
-        console = Console()
-        console.print(OMNIMEMORY_BANNER)
-        print("\n" + "=" * 50)
-        print("Copy the OMNIMEMORY_BANNER variable for use in your code")
-    except ImportError:
-        print(OMNIMEMORY_BANNER)
