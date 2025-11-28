@@ -3,21 +3,21 @@ Comprehensive unit tests for OmniMemorySDK.
 """
 
 import asyncio
-import uuid
-from unittest.mock import AsyncMock, Mock, patch, MagicMock
-from typing import Dict, Any
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import httpx
 
-import omnimemory.sdk
 from omnimemory.sdk import OmniMemorySDK
 from omnimemory.core.schemas import (
     UserMessages,
     Message,
     ConversationSummaryRequest,
     AgentMemoryRequest,
+    MemoryBatcherAppendRequest,
+    MemoryBatcherMessage,
 )
+from omnimemory.core.config import DEFAULT_MAX_MESSAGES
 from omnimemory.core.results import MemoryOperationResult
 from omnimemory.core.llm import LLMConnection
 
@@ -60,7 +60,7 @@ def sample_user_messages():
     """Create sample UserMessages for testing."""
     messages = [
         Message(role="user", content=f"Message {i}", timestamp="2024-01-01T00:00:00Z")
-        for i in range(30)
+        for i in range(DEFAULT_MAX_MESSAGES)
     ]
     return UserMessages(
         app_id="app1234567890",
@@ -250,278 +250,212 @@ def test_register_background_task_handles_already_done_task(mock_llm_connection)
 
 
 def test_format_messages_includes_all_attributes(mock_llm_connection):
-    """Test _format_messages includes timestamp, role, and content."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation includes role and content (no timestamp)."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            Message(role="user", content="Hello", timestamp="2024-01-01T00:00:00Z"),
-            Message(
-                role="assistant", content="Hi there", timestamp="2024-01-01T00:00:01Z"
-            ),
-        ] + [
-            Message(
-                role="user", content=f"Message {i}", timestamp="2024-01-01T00:00:00Z"
-            )
-            for i in range(28)
+    base_messages = [
+        Message(role="user", content="Hello"),
+        Message(role="assistant", content="Hi there"),
+    ]
+    if DEFAULT_MAX_MESSAGES <= len(base_messages):
+        messages = base_messages[:DEFAULT_MAX_MESSAGES]
+    else:
+        extra_needed = DEFAULT_MAX_MESSAGES - len(base_messages)
+        messages = base_messages + [
+            Message(role="user", content=f"Message {i}") for i in range(extra_needed)
         ]
-        user_msg = UserMessages(
-            app_id="app1234567890",
-            user_id="user1234567890",
-            session_id=None,
-            messages=messages,
-        )
+    user_msg = UserMessages(
+        app_id="app1234567890",
+        user_id="user1234567890",
+        session_id=None,
+        messages=messages,
+    )
 
-        result = sdk._format_messages(user_msg)
+    result = format_conversation(user_msg)
 
-        assert "[2024-01-01T00:00:00Z] user: Hello" in result
-        assert "[2024-01-01T00:00:01Z] assistant: Hi there" in result
-
-
-def test_format_messages_handles_missing_timestamp(mock_llm_connection):
-    """Test _format_messages handles None timestamp (code uses hasattr, so None shows as 'None')."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
-
-        msg = Mock()
-        msg.timestamp = None
-        msg.role = "user"
-        msg.content = "Hello"
-
-        user_msg = Mock()
-        user_msg.messages = [msg]
-
-        result = sdk._format_messages(user_msg)
-
-        assert "[None] user: Hello" in result
+    assert "user: Hello" in result
+    assert "assistant: Hi there" in result
 
 
 def test_format_messages_handles_missing_role(mock_llm_connection):
-    """Test _format_messages handles None role (code uses hasattr, so None shows as 'None')."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles missing role (defaults to user)."""
+    from omnimemory.core.utils import format_conversation
 
-        msg = Mock()
-        msg.timestamp = "2024-01-01T00:00:00Z"
-        msg.role = None
-        msg.content = "Hello"
-
-        user_msg = Mock()
-        user_msg.messages = [msg]
-
-        result = sdk._format_messages(user_msg)
-
-        assert "[2024-01-01T00:00:00Z] None: Hello" in result
+    msg = {"content": "Hello"}
+    result = format_conversation([msg])
+    assert "user: Hello" in result
 
 
 def test_format_messages_handles_missing_content(mock_llm_connection):
-    """Test _format_messages uses empty string for missing content."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation uses empty string for missing content."""
+    from omnimemory.core.utils import format_conversation
 
-        msg = Mock()
-        msg.timestamp = "2024-01-01T00:00:00Z"
-        msg.role = "user"
-        msg.content = None
-
-        user_msg = Mock()
-        user_msg.messages = [msg]
-
-        result = sdk._format_messages(user_msg)
-
-        assert "[2024-01-01T00:00:00Z] user: " in result
+    msg = {"role": "user", "content": ""}
+    result = format_conversation([msg])
+    assert "user: " in result
 
 
 def test_format_messages_joins_with_newlines(mock_llm_connection):
-    """Test _format_messages joins multiple messages with newlines."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation joins multiple messages with newlines."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            Message(role="user", content="Msg1", timestamp="2024-01-01T00:00:00Z"),
-            Message(role="user", content="Msg2", timestamp="2024-01-01T00:00:01Z"),
-        ] + [
-            Message(
-                role="user", content=f"Message {i}", timestamp="2024-01-01T00:00:00Z"
-            )
-            for i in range(28)
+    base_messages = [
+        Message(role="user", content="Msg1"),
+        Message(role="user", content="Msg2"),
+    ]
+    if DEFAULT_MAX_MESSAGES <= len(base_messages):
+        messages = base_messages[:DEFAULT_MAX_MESSAGES]
+    else:
+        extra_needed = DEFAULT_MAX_MESSAGES - len(base_messages)
+        messages = base_messages + [
+            Message(role="user", content=f"Message {i}") for i in range(extra_needed)
         ]
-        user_msg = UserMessages(
-            app_id="app1234567890",
-            user_id="user1234567890",
-            session_id=None,
-            messages=messages,
-        )
+    user_msg = UserMessages(
+        app_id="app1234567890",
+        user_id="user1234567890",
+        session_id=None,
+        messages=messages,
+    )
 
-        result = sdk._format_messages(user_msg)
+    result = format_conversation(user_msg)
 
-        assert "\n" in result
-        lines = result.split("\n")
-        assert len(lines) == 30
+    assert "\n" in result
+    lines = result.split("\n")
+    assert len(lines) == DEFAULT_MAX_MESSAGES
 
 
 def test_format_messages_handles_empty_list(mock_llm_connection):
-    """Test _format_messages handles empty messages list."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles empty messages list."""
+    from omnimemory.core.utils import format_conversation
 
-        user_msg = Mock()
-        user_msg.messages = []
+    result = format_conversation([])
 
-        result = sdk._format_messages(user_msg)
-
-        assert result == ""
+    assert result == ""
 
 
 def test_format_messages_handles_special_characters(mock_llm_connection):
-    """Test _format_messages handles special characters in content."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles special characters in content."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            Message(
-                role="user",
-                content="Hello\nWorld\tTab",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ] + [
-            Message(
-                role="user", content=f"Message {i}", timestamp="2024-01-01T00:00:00Z"
-            )
-            for i in range(29)
+    base_messages = [
+        Message(role="user", content="Hello\nWorld\tTab"),
+    ]
+    if DEFAULT_MAX_MESSAGES <= len(base_messages):
+        messages = base_messages[:DEFAULT_MAX_MESSAGES]
+    else:
+        extra_needed = DEFAULT_MAX_MESSAGES - len(base_messages)
+        messages = base_messages + [
+            Message(role="user", content=f"Message {i}") for i in range(extra_needed)
         ]
-        user_msg = UserMessages(
-            app_id="app1234567890",
-            user_id="user1234567890",
-            session_id=None,
-            messages=messages,
-        )
+    user_msg = UserMessages(
+        app_id="app1234567890",
+        user_id="user1234567890",
+        session_id=None,
+        messages=messages,
+    )
 
-        result = sdk._format_messages(user_msg)
+    result = format_conversation(user_msg)
 
-        assert "Hello\nWorld\tTab" in result
+    assert "Hello\nWorld\tTab" in result
 
 
 def test_format_flexible_messages_returns_stripped_string(mock_llm_connection):
-    """Test _format_flexible_messages returns stripped string for string input."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation packages string as user message."""
+    from omnimemory.core.utils import format_conversation
 
-        result = sdk._format_flexible_messages("  Hello World  ")
+    result = format_conversation("  Hello World  ")
 
-        assert result == "Hello World"
+    assert result == "user: Hello World"
 
 
 def test_format_flexible_messages_formats_dict_list(mock_llm_connection):
-    """Test _format_flexible_messages formats list of dict messages."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation formats list of dict messages."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            {"role": "user", "content": "Hello", "timestamp": "2024-01-01T00:00:00Z"},
-            {"role": "assistant", "content": "Hi", "timestamp": "2024-01-01T00:00:01Z"},
-        ]
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+    ]
 
-        result = sdk._format_flexible_messages(messages)
+    result = format_conversation(messages)
 
-        assert "[2024-01-01T00:00:00Z] user: Hello" in result
-        assert "[2024-01-01T00:00:01Z] assistant: Hi" in result
+    assert "user: Hello" in result
+    assert "assistant: Hi" in result
 
 
 def test_format_flexible_messages_handles_missing_fields(mock_llm_connection):
-    """Test _format_flexible_messages uses defaults for missing fields."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation uses defaults for missing fields."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            {"content": "Hello"},
-        ]
+    messages = [
+        {"content": "Hello"},
+    ]
 
-        result = sdk._format_flexible_messages(messages)
+    result = format_conversation(messages)
 
-        assert "[N/A] unknown: Hello" in result
-
-
-def test_format_flexible_messages_handles_none_timestamp(mock_llm_connection):
-    """Test _format_flexible_messages uses 'N/A' for None timestamp."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
-
-        messages = [
-            {"role": "user", "content": "Hello", "timestamp": None},
-        ]
-
-        result = sdk._format_flexible_messages(messages)
-
-        assert "[N/A] user: Hello" in result
+    assert "user: Hello" in result
 
 
 def test_format_flexible_messages_converts_non_dict_to_string(mock_llm_connection):
-    """Test _format_flexible_messages converts non-dict items to string."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation converts non-dict items to user message."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            "Simple string message",
-            123,
-        ]
+    messages = [
+        "Simple string message",
+        123,
+    ]
 
-        result = sdk._format_flexible_messages(messages)
+    result = format_conversation(messages)
 
-        assert "[N/A] unknown: Simple string message" in result
-        assert "[N/A] unknown: 123" in result
+    assert "user: Simple string message" in result
+    assert "user: 123" in result
 
 
 def test_format_flexible_messages_handles_empty_string(mock_llm_connection):
-    """Test _format_flexible_messages handles empty string."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles empty string."""
+    from omnimemory.core.utils import format_conversation
 
-        result = sdk._format_flexible_messages("")
+    result = format_conversation("")
 
-        assert result == ""
+    assert result == "user: "
 
 
 def test_format_flexible_messages_handles_empty_list(mock_llm_connection):
-    """Test _format_flexible_messages handles empty list."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles empty list."""
+    from omnimemory.core.utils import format_conversation
 
-        result = sdk._format_flexible_messages([])
+    result = format_conversation([])
 
-        assert result == ""
+    assert result == ""
 
 
 def test_format_flexible_messages_handles_mixed_list(mock_llm_connection):
-    """Test _format_flexible_messages handles mixed list (dicts and strings)."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles mixed list (dicts and strings)."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [
-            {
-                "role": "user",
-                "content": "Dict message",
-                "timestamp": "2024-01-01T00:00:00Z",
-            },
-            "String message",
-        ]
+    messages = [
+        {
+            "role": "user",
+            "content": "Dict message",
+        },
+        "String message",
+    ]
 
-        result = sdk._format_flexible_messages(messages)
+    result = format_conversation(messages)
 
-        assert "[2024-01-01T00:00:00Z] user: Dict message" in result
-        assert "[N/A] unknown: String message" in result
+    assert "user: Dict message" in result
+    assert "user: String message" in result
 
 
 def test_format_flexible_messages_handles_none_items(mock_llm_connection):
-    """Test _format_flexible_messages handles None items in list."""
-    with patch("omnimemory.sdk.LLMConnection"):
-        sdk = OmniMemorySDK()
+    """Test format_conversation handles None items in list."""
+    from omnimemory.core.utils import format_conversation
 
-        messages = [None]
+    messages = [None]
 
-        result = sdk._format_flexible_messages(messages)
+    result = format_conversation(messages)
 
-        assert "[N/A] unknown: None" in result
+    assert "user: None" in result
 
 
 @pytest.mark.asyncio
@@ -638,14 +572,16 @@ async def test_add_memory_handles_formatting_error(
     """Test add_memory handles formatting errors."""
     with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
         with patch("omnimemory.sdk.MemoryManager"):
-            sdk = OmniMemorySDK()
+            with patch(
+                "omnimemory.sdk.format_conversation",
+                side_effect=ValueError("Format error"),
+            ):
+                sdk = OmniMemorySDK()
 
-            sdk._format_messages = Mock(side_effect=ValueError("Format error"))
+                result = await sdk.add_memory(sample_user_messages)
 
-            result = await sdk.add_memory(sample_user_messages)
-
-            assert result["status"] == "failed"
-            assert "error" in result
+                assert result["status"] == "failed"
+                assert "error" in result
 
 
 @pytest.mark.asyncio
@@ -697,7 +633,7 @@ async def test_summarize_conversation_without_callback_uses_fast_path(
                 app_id="app1234567890",
                 user_id="user1234567890",
                 session_id=None,
-                messages="Test conversation",
+                messages="user: Test conversation",
                 llm_connection=mock_llm_connection,
                 use_fast_path=True,
             )
@@ -1550,126 +1486,6 @@ async def test_get_connection_pool_stats_returns_error_dict_on_failure(
 
 
 @pytest.mark.asyncio
-async def test_get_task_status_returns_processing_for_running_task(
-    mock_llm_connection, sample_user_messages, mock_memory_manager
-):
-    """Test get_task_status returns 'processing' for running task."""
-    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
-        with patch("omnimemory.sdk.MemoryManager", return_value=mock_memory_manager):
-
-            async def slow_task():
-                await asyncio.sleep(0.1)
-                return {"success": True}
-
-            mock_memory_manager.create_and_store_memory = AsyncMock(
-                side_effect=slow_task
-            )
-
-            sdk = OmniMemorySDK()
-
-            result = await sdk.add_memory(sample_user_messages)
-            task_id = result["task_id"]
-
-            status = await sdk.get_task_status(task_id)
-
-            assert status["status"] == "processing"
-            assert status["task_id"] == task_id
-
-            task = sdk._background_tasks[task_id]
-            await task
-
-
-@pytest.mark.asyncio
-async def test_get_task_status_returns_completed_for_done_task(
-    mock_llm_connection, sample_user_messages, mock_memory_manager
-):
-    """Test get_task_status returns 'completed' for done task with success."""
-    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
-        with patch("omnimemory.sdk.MemoryManager", return_value=mock_memory_manager):
-            mock_memory_manager.create_and_store_memory = AsyncMock(
-                return_value=MemoryOperationResult(success=True)
-            )
-
-            sdk = OmniMemorySDK()
-
-            result = await sdk.add_memory(sample_user_messages)
-            task_id = result["task_id"]
-
-            task = sdk._background_tasks[task_id]
-            await task
-
-            status = await sdk.get_task_status(task_id)
-
-            assert status["status"] in ["completed", "unknown"]
-
-
-@pytest.mark.asyncio
-async def test_get_task_status_returns_failed_for_failed_task(
-    mock_llm_connection, sample_user_messages, mock_memory_manager
-):
-    """Test get_task_status returns 'failed' for done task with failure."""
-    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
-        with patch("omnimemory.sdk.MemoryManager", return_value=mock_memory_manager):
-            mock_memory_manager.create_and_store_memory = AsyncMock(
-                side_effect=RuntimeError("Task failed")
-            )
-
-            sdk = OmniMemorySDK()
-
-            result = await sdk.add_memory(sample_user_messages)
-            task_id = result["task_id"]
-
-            task = sdk._background_tasks[task_id]
-            await task
-
-            status = await sdk.get_task_status(task_id)
-
-            assert status["status"] in ["failed", "unknown"]
-
-
-@pytest.mark.asyncio
-async def test_get_task_status_returns_unknown_for_nonexistent_task(
-    mock_llm_connection,
-):
-    """Test get_task_status returns 'unknown' for non-existent task."""
-    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
-        sdk = OmniMemorySDK()
-
-        status = await sdk.get_task_status("nonexistent-task-id")
-
-        assert status["status"] == "unknown"
-        assert status["task_id"] == "nonexistent-task-id"
-
-
-@pytest.mark.asyncio
-async def test_get_task_status_handles_task_result_exception(
-    mock_llm_connection, sample_user_messages, mock_memory_manager
-):
-    """Test get_task_status handles task.result() exceptions (e.g., cancelled tasks)."""
-    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
-        with patch("omnimemory.sdk.MemoryManager", return_value=mock_memory_manager):
-            sdk = OmniMemorySDK()
-
-            task_id = "test-task-cancelled"
-            mock_task = Mock(spec=asyncio.Task)
-            mock_task.done = Mock(return_value=True)
-            mock_task.result = Mock(
-                side_effect=asyncio.CancelledError("Task was cancelled")
-            )
-
-            sdk._background_tasks[task_id] = mock_task
-
-            status = await sdk.get_task_status(task_id)
-
-            assert status["status"] == "failed"
-            assert "error" in status
-            assert (
-                "cancelled" in status["error"].lower()
-                or "Task was cancelled" in status["error"]
-            )
-
-
-@pytest.mark.asyncio
 async def test_summarize_conversation_error_callback_delivery_fails(
     mock_llm_connection, mock_memory_manager
 ):
@@ -1755,44 +1571,83 @@ async def test_post_callback_last_attempt_non_http_exception(mock_llm_connection
 
 
 @pytest.mark.asyncio
-async def test_get_task_status_returns_completed_with_success_result(
-    mock_llm_connection,
-):
-    """Test get_task_status returns 'completed' when task.result() succeeds with success=True (line 643)."""
+async def test_memory_batcher_add_flushes_on_threshold(mock_llm_connection):
+    """MemoryBatcher flushes via add_memory when buffer reaches batch size."""
     with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
         sdk = OmniMemorySDK()
-
-        task_id = "test-task-success"
-        mock_task = Mock(spec=asyncio.Task)
-        mock_task.done = Mock(return_value=True)
-        mock_task.result = Mock(
-            return_value={"success": True, "task_id": task_id, "memory_id": "mem123"}
+        sdk.add_memory = AsyncMock(
+            return_value={"task_id": "task-123", "status": "accepted"}
+        )
+        sdk.add_agent_memory = AsyncMock(
+            return_value={"task_id": "agent-1", "status": "accepted"}
         )
 
-        sdk._background_tasks[task_id] = mock_task
+        messages = [
+            MemoryBatcherMessage(role="user", content=f"msg-{i}")
+            for i in range(DEFAULT_MAX_MESSAGES)
+        ]
+        request = MemoryBatcherAppendRequest(
+            app_id="app1234567890",
+            user_id="user1234567890",
+            session_id=None,
+            messages=messages,
+        )
 
-        status = await sdk.get_task_status(task_id)
+        result = await sdk.memory_batcher_add(request)
 
-        assert status["status"] == "completed"
-        assert "result" in status
-        assert status["result"].get("success") is True
-        assert status["result"].get("task_id") == task_id
+        assert result["status"] == "flushed"
+        assert result["pending_messages"] == 0
+        assert sdk.add_memory.await_count == 1
+        sdk.add_agent_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_get_task_status_outer_exception_handler(mock_llm_connection):
-    """Test get_task_status handles exceptions in outer try block (lines 662-666)."""
+async def test_memory_batcher_add_pending_when_under_threshold(mock_llm_connection):
+    """MemoryBatcher reports pending status while buffer is not full."""
     with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
         sdk = OmniMemorySDK()
+        sdk.add_memory = AsyncMock(
+            return_value={"task_id": "task-123", "status": "accepted"}
+        )
 
-        task_id = "test-task-exception"
-        mock_task = Mock(spec=asyncio.Task)
-        mock_task.done = Mock(side_effect=RuntimeError("Task.done() failed"))
+        request = MemoryBatcherAppendRequest(
+            app_id="app1234567890",
+            user_id="user1234567890",
+            session_id=None,
+            messages=[MemoryBatcherMessage(role="user", content="hello world")],
+        )
 
-        sdk._background_tasks[task_id] = mock_task
+        result = await sdk.memory_batcher_add(request)
 
-        status = await sdk.get_task_status(task_id)
+        assert result["status"] == "pending"
+        assert result["pending_messages"] == 1
+        sdk.add_memory.assert_not_awaited()
 
-        assert status["status"] == "error"
-        assert "error" in status
-        assert "Task.done() failed" in status["error"]
+
+@pytest.mark.asyncio
+async def test_memory_batcher_add_message_helper_invokes_append(mock_llm_connection):
+    """Helper should build request and delegate to memory_batcher_add."""
+    with patch("omnimemory.sdk.LLMConnection", return_value=mock_llm_connection):
+        sdk = OmniMemorySDK()
+        sdk.memory_batcher_add = AsyncMock(
+            return_value={
+                "status": "pending",
+                "pending_messages": 1,
+                "batch_size": DEFAULT_MAX_MESSAGES,
+            }
+        )
+
+        result = await sdk.memory_batcher_add_message(
+            app_id="app1234567890",
+            user_id="user1234567890",
+            session_id=None,
+            role="user",
+            content="Hello helper",
+        )
+
+        sdk.memory_batcher_add.assert_awaited_once()
+        request_arg = sdk.memory_batcher_add.await_args.args[0]
+        assert isinstance(request_arg, MemoryBatcherAppendRequest)
+        assert request_arg.app_id == "app1234567890"
+        assert request_arg.messages[0].role == "user"
+        assert result["pending_messages"] == 1

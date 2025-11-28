@@ -14,18 +14,25 @@ logger = get_logger(name="omnimemory.memory_management.qdrant_vector_db")
 
 
 class QdrantVectorDB(VectorDBBase):
-    """Qdrant vector database implementation."""
+    """
+    Qdrant vector database implementation.
 
-    def __init__(self, **kwargs):
-        """Initialize Qdrant vector database.
+    Provides vector database operations using Qdrant with async client support.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """
+        Initialize Qdrant vector database.
 
         Args:
             **kwargs: Additional parameters including llm_connection
         """
         super().__init__(**kwargs)
 
-        self.enabled = False
-        self.client = None
+        self.enabled: bool = False
+        self.client: Optional[AsyncQdrantClient] = None
+        self.qdrant_host: Optional[str] = None
+        self.qdrant_port: Optional[int] = None
 
         self.qdrant_host = config("QDRANT_HOST", default=None)
         qdrant_port_str = config("QDRANT_PORT", default=None)
@@ -63,16 +70,25 @@ class QdrantVectorDB(VectorDBBase):
             )
             self.enabled = False
 
-    async def close(self):
-        """Cleanup method to release async connection."""
+    async def close(self) -> None:
+        """
+        Cleanup method to release async connection.
+
+        Closes the Qdrant client connection and releases resources.
+        """
         if self.client:
             await self.client.close()
 
-    async def _ensure_collection(self, collection_name: str):
-        """Ensure the collection exists, create if it doesn't.
+    async def _ensure_collection(self, collection_name: str) -> None:
+        """
+        Ensure the collection exists, create if it doesn't.
 
         Args:
             collection_name: Name of the collection
+
+        Raises:
+            ValueError: If vector size is not set.
+            Exception: If collection creation fails.
         """
         if not self.client:
             logger.warning("Qdrant is not enabled. Cannot ensure collection.")
@@ -117,7 +133,7 @@ class QdrantVectorDB(VectorDBBase):
         doc_id: str,
         document: str,
         embedding: List[float],
-        metadata: Dict,
+        metadata: Dict[str, Any],
     ) -> bool:
         """Add document with embedding to collection.
 
@@ -149,6 +165,8 @@ class QdrantVectorDB(VectorDBBase):
                 id=doc_id, vector=embedding, payload=metadata_copy
             )
 
+            if self.client is None:
+                raise RuntimeError("Qdrant client is not initialized")
             await self.client.upsert(
                 collection_name=collection_name,
                 points=[point],
@@ -167,9 +185,9 @@ class QdrantVectorDB(VectorDBBase):
         query: str,
         n_results: int,
         similarity_threshold: float,
-        filter_conditions: Dict[str, Any] = None,
-    ):
-        """Query collection with flexible filtering (async version).
+        filter_conditions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Query collection with flexible filtering .
 
         Args:
             collection_name: Name of the collection to query
@@ -197,7 +215,7 @@ class QdrantVectorDB(VectorDBBase):
                         )
 
             query_filter = (
-                rest.Filter(must=must_conditions) if must_conditions else None
+                rest.Filter(must=list(must_conditions)) if must_conditions else None
             )
 
             expanded_limit = min(n_results * 5, 1000)
@@ -231,7 +249,10 @@ class QdrantVectorDB(VectorDBBase):
             limited_results = filtered_results[:n_results]
 
             return {
-                "documents": [hit.payload.get("text", "") for hit in limited_results],
+                "documents": [
+                    hit.payload.get("text", "") if hit.payload else ""
+                    for hit in limited_results
+                ],
                 "scores": [hit.score for hit in limited_results],
                 "metadatas": [hit.payload for hit in limited_results],
                 "ids": [hit.id for hit in limited_results],
@@ -248,9 +269,9 @@ class QdrantVectorDB(VectorDBBase):
         collection_name: str,
         embedding: List[float],
         n_results: int,
-        filter_conditions: Dict[str, Any] = None,
+        filter_conditions: Optional[Dict[str, Any]] = None,
         similarity_threshold: float = 0.0,
-    ):
+    ) -> Dict[str, Any]:
         """Query collection using an embedding vector directly.
 
         Args:
@@ -283,7 +304,7 @@ class QdrantVectorDB(VectorDBBase):
                         )
 
             query_filter = (
-                rest.Filter(must=must_conditions) if must_conditions else None
+                rest.Filter(must=list(must_conditions)) if must_conditions else None
             )
 
             limit = n_results if n_results is not None else 10000
@@ -316,7 +337,10 @@ class QdrantVectorDB(VectorDBBase):
             limited_results = filtered_results[:limit] if limit else filtered_results
 
             return {
-                "documents": [hit.payload.get("text", "") for hit in limited_results],
+                "documents": [
+                    hit.payload.get("text", "") if hit.payload else ""
+                    for hit in limited_results
+                ],
                 "scores": [hit.score for hit in limited_results],
                 "metadatas": [hit.payload for hit in limited_results],
                 "ids": [hit.id for hit in limited_results],
@@ -352,6 +376,8 @@ class QdrantVectorDB(VectorDBBase):
         try:
             await self._ensure_collection(collection_name)
 
+            if self.client is None:
+                raise RuntimeError("Qdrant client is not initialized")
             try:
                 existing_points = await asyncio.wait_for(
                     self.client.retrieve(
@@ -386,23 +412,27 @@ class QdrantVectorDB(VectorDBBase):
                 return False
 
             existing_point = existing_points[0]
-            existing_payload = existing_point.payload
+            existing_payload = existing_point.payload or {}
 
-            if hasattr(existing_point, "vector") and existing_point.vector is not None:
-                existing_vector = existing_point.vector
-                if not isinstance(existing_vector, list):
-                    if isinstance(existing_vector, dict):
-                        existing_vector = (
-                            list(existing_vector.values())[0] if existing_vector else []
-                        )
-                    else:
-                        existing_vector = []
-                if not all(isinstance(x, (int, float)) for x in existing_vector):
-                    logger.error(f"Invalid vector format for point {doc_id}")
-                    return False
-            else:
+            vector_value = getattr(existing_point, "vector", None)
+            existing_vector_list: Optional[List[Any]] = None
+            if isinstance(vector_value, list):
+                existing_vector_list = vector_value
+            elif isinstance(vector_value, dict):
+                nested = list(vector_value.values())[0] if vector_value else None
+                if isinstance(nested, list):
+                    existing_vector_list = nested
+
+            if existing_vector_list is None:
                 logger.error(f"No vector found for point {doc_id}")
                 return False
+            if not all(isinstance(x, (int, float)) for x in existing_vector_list):
+                logger.error(
+                    f"Invalid vector format for point {doc_id}: expected flat numeric list"
+                )
+                return False
+
+            existing_vector = [float(x) for x in existing_vector_list]
 
             updated_payload = {**existing_payload, **update_payload}
             await self.client.upsert(
@@ -454,6 +484,8 @@ class QdrantVectorDB(VectorDBBase):
         try:
             await self._ensure_collection(collection_name)
 
+            if self.client is None:
+                raise RuntimeError("Qdrant client is not initialized")
             try:
                 points = await asyncio.wait_for(
                     self.client.retrieve(collection_name=collection_name, ids=[doc_id]),
@@ -481,6 +513,8 @@ class QdrantVectorDB(VectorDBBase):
                 return None
 
             point = points[0]
+            if point.payload is None:
+                return None
             metadata = point.payload.copy()
             del metadata["text"]
             return {

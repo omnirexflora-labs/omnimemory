@@ -16,12 +16,10 @@ from datetime import datetime, timezone
 
 
 class Message(BaseModel):
-    role: str = Field(..., description="The role of the message")
-    content: str = Field(..., description="The content of the message")
-    timestamp: Optional[str] = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="The timestamp of the message",
+    role: str = Field(
+        ..., description="The role of the message (user, assistant, or system)"
     )
+    content: str = Field(..., description="The content of the message")
 
 
 class UserMessages(BaseModel):
@@ -45,7 +43,7 @@ class UserMessages(BaseModel):
     )
     messages: List[Message] = Field(
         ...,
-        description=f"The messages that the user is sending to the omnimemory. Must be between 1 and {DEFAULT_MAX_MESSAGES} messages.",
+        description=f"The messages that the user is sending to the omnimemory. Must be {DEFAULT_MAX_MESSAGES} messages.",
         min_length=DEFAULT_MAX_MESSAGES,
         max_length=DEFAULT_MAX_MESSAGES,
     )
@@ -53,8 +51,18 @@ class UserMessages(BaseModel):
     @field_validator("messages")
     @classmethod
     def validate_messages_count(cls, v: List[Message]) -> List[Message]:
-        """Validate that messages count is DEFAULT_MAX_MESSAGES"""
+        """
+        Validate that messages count is exactly DEFAULT_MAX_MESSAGES.
 
+        Args:
+            v: List of Message objects to validate.
+
+        Returns:
+            Validated list of Message objects.
+
+        Raises:
+            ValueError: If message count is not exactly DEFAULT_MAX_MESSAGES.
+        """
         if len(v) != DEFAULT_MAX_MESSAGES:
             raise ValueError(
                 f"Exactly {DEFAULT_MAX_MESSAGES} messages are required. You provided {len(v)} messages. "
@@ -63,8 +71,16 @@ class UserMessages(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_messages_range(self):
-        """Additional validation to ensure messages count is DEFAULT_MAX_MESSAGES"""
+    def validate_messages_range(self) -> "UserMessages":
+        """
+        Additional validation to ensure messages count is exactly DEFAULT_MAX_MESSAGES.
+
+        Returns:
+            Validated UserMessages instance.
+
+        Raises:
+            ValueError: If message count is not exactly DEFAULT_MAX_MESSAGES.
+        """
         if len(self.messages) != DEFAULT_MAX_MESSAGES:
             raise ValueError(
                 f"Exactly {DEFAULT_MAX_MESSAGES} messages are required. You provided {len(self.messages)} messages. "
@@ -78,16 +94,21 @@ class AddUserMessageRequest(BaseModel):
 
     app_id: str = Field(..., description="Application ID", min_length=10)
     user_id: str = Field(..., description="User ID", min_length=10)
-    session_id: Optional[str] = Field(None, description="Session ID")
+    session_id: Optional[str] = Field(None, description="Session ID", min_length=10)
     messages: List[Dict[str, str]] = Field(
         ...,
-        description=f"List of messages with role, content, and timestamp. Must be {DEFAULT_MAX_MESSAGES} messages.",
+        description=f"List of messages with role and content. Must be {DEFAULT_MAX_MESSAGES} messages. Role must be 'user', 'assistant', or 'system'.",
         min_length=DEFAULT_MAX_MESSAGES,
         max_length=DEFAULT_MAX_MESSAGES,
     )
 
     def to_user_messages(self) -> "UserMessages":
-        """Convert to UserMessages schema (validates message count)."""
+        """
+        Convert to UserMessages schema (validates message count).
+
+        Returns:
+            UserMessages instance with validated message count.
+        """
         return UserMessages(
             app_id=self.app_id,
             user_id=self.user_id,
@@ -101,10 +122,10 @@ class ConversationSummaryRequest(BaseModel):
 
     app_id: str = Field(..., description="Application ID", min_length=10)
     user_id: str = Field(..., description="User ID", min_length=10)
-    session_id: Optional[str] = Field(None, description="Session ID")
+    session_id: Optional[str] = Field(None, description="Session ID", min_length=10)
     messages: List[Message] | str = Field(
         ...,
-        description="Conversation payload. Accepts a raw string or list of message objects.",
+        description="Conversation payload. Accepts a raw string (unstructured) or list of Message objects (structured). Unstructured text will be packaged as a user message, but may have negative effects on structured data due to conversation flow.",
     )
     callback_url: Optional[AnyHttpUrl] = Field(
         None, description="Optional webhook to receive the summary asynchronously"
@@ -116,8 +137,19 @@ class ConversationSummaryRequest(BaseModel):
 
     @field_validator("messages")
     @classmethod
-    def validate_messages(cls, value):
-        """Ensure messages payload is non-empty."""
+    def validate_messages(cls, value: Any) -> Any:
+        """
+        Ensure messages payload is non-empty.
+
+        Args:
+            value: Messages payload (string or list of Message objects).
+
+        Returns:
+            Validated messages payload.
+
+        Raises:
+            ValueError: If messages payload is empty or invalid type.
+        """
         if isinstance(value, str):
             if not value.strip():
                 raise ValueError("messages string cannot be empty")
@@ -134,8 +166,10 @@ class QueryMemoryRequest(BaseModel):
 
     app_id: str = Field(..., description="Application ID", min_length=10)
     query: str = Field(..., description="Natural language query", min_length=10)
-    user_id: Optional[str] = Field(None, description="User ID filter")
-    session_id: Optional[str] = Field(None, description="Session ID filter")
+    user_id: Optional[str] = Field(None, description="User ID filter", min_length=10)
+    session_id: Optional[str] = Field(
+        None, description="Session ID filter", min_length=10
+    )
     n_results: Optional[int] = Field(
         None, description="Maximum number of results", ge=1, le=100
     )
@@ -210,10 +244,10 @@ class AgentMemoryRequest(BaseModel):
 
     app_id: str = Field(..., description="Application ID", min_length=10)
     user_id: str = Field(..., description="User ID", min_length=10)
-    session_id: Optional[str] = Field(None, description="Session ID")
+    session_id: Optional[str] = Field(None, description="Session ID", min_length=10)
     messages: List[Message] | str = Field(
         ...,
-        description="Messages from agent. Accepts a raw string or list of message objects.",
+        description="Messages from agent. Accepts a raw string (unstructured) or list of Message objects (structured). Unstructured text will be packaged as a user message, but may have negative effects on structured data due to conversation flow.",
     )
 
 
@@ -255,4 +289,40 @@ class ConversationSummaryResponse(BaseModel):
     generated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp when the summary was generated",
+    )
+
+
+class MemoryBatcherMessage(BaseModel):
+    role: str = Field(
+        ...,
+        description="Role of the message (user, assistant, or system)",
+    )
+    content: str = Field(..., description="Content of the message")
+
+
+class MemoryBatcherAppendRequest(BaseModel):
+    """Request schema for appending messages to the MemoryBatcher."""
+
+    app_id: str = Field(..., description="Application ID", min_length=10)
+    user_id: str = Field(..., description="User ID", min_length=10)
+    session_id: Optional[str] = Field(None, description="Session ID", min_length=10)
+    messages: List[MemoryBatcherMessage] = Field(
+        ..., min_length=1, description="Messages to append to the batcher"
+    )
+
+
+class MemoryBatcherStatusResponse(BaseModel):
+    """Response schema describing MemoryBatcher status."""
+
+    app_id: str
+    user_id: str
+    session_id: Optional[str]
+    pending_messages: int = Field(..., ge=0)
+    batch_size: int = Field(..., ge=1)
+    status: str = Field(..., description="pending, flushed, flushed_partial, or empty")
+    last_delivery: Optional[str] = Field(
+        None, description="Last delivery path used (add_memory or agent_memory)"
+    )
+    last_task_id: Optional[str] = Field(
+        None, description="Task ID returned from the last flush operation"
     )

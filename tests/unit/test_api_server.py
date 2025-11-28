@@ -3,12 +3,10 @@ Comprehensive unit tests for OmniMemory API Server.
 """
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
-from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from typing import Dict, Any, List
 
 from omnimemory.api.server import app, lifespan, get_sdk
 from omnimemory.sdk import OmniMemorySDK
@@ -23,7 +21,6 @@ from omnimemory.core.schemas import (
     SuccessResponse,
     Message,
 )
-from omnimemory.core.results import MemoryOperationResult
 from omnimemory.core.config import DEFAULT_MAX_MESSAGES
 
 
@@ -1234,7 +1231,7 @@ def test_root_returns_api_information():
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["name"] == "OmniMemory API"
-    assert data["version"] == "0.1.0-beta"
+    assert data["version"] == "0.0.1"
     assert "architecture" in data
     assert "description" in data
     assert "endpoints" in data
@@ -1281,7 +1278,6 @@ async def test_add_memory_validation_error_multiple_errors(mock_sdk):
     """Test add_memory formats ValidationError with multiple errors (lines 105-111)."""
     from omnimemory.api.server import add_memory
     from fastapi import Request, HTTPException
-    from pydantic import ValidationError
 
     mock_request = Mock(spec=AddUserMessageRequest)
     validation_error = ValidationError.from_exception_data(
@@ -1323,7 +1319,6 @@ async def test_add_memory_validation_error_empty_error_details(mock_sdk):
     """Test add_memory handles ValidationError with empty error_details (line 109 fallback)."""
     from omnimemory.api.server import add_memory
     from fastapi import Request, HTTPException
-    from pydantic import ValidationError
 
     mock_request = Mock(spec=AddUserMessageRequest)
     validation_error = ValidationError.from_exception_data(
@@ -1351,7 +1346,6 @@ async def test_add_memory_validation_error_single_error(mock_sdk):
     """Test add_memory formats ValidationError with single error."""
     from omnimemory.api.server import add_memory
     from fastapi import Request, HTTPException
-    from pydantic import ValidationError
 
     mock_request = Mock(spec=AddUserMessageRequest)
     validation_error = ValidationError.from_exception_data(
@@ -1444,14 +1438,10 @@ def test_message_schema_usage():
     message1 = Message(role="user", content="Hello")
     assert message1.role == "user"
     assert message1.content == "Hello"
-    assert message1.timestamp is not None
 
-    message2 = Message(
-        role="assistant", content="Hi there", timestamp="2024-01-01T00:00:00Z"
-    )
+    message2 = Message(role="assistant", content="Hi there")
     assert message2.role == "assistant"
     assert message2.content == "Hi there"
-    assert message2.timestamp == "2024-01-01T00:00:00Z"
 
     assert message1.model_dump()["role"] == "user"
     assert message2.model_dump()["content"] == "Hi there"

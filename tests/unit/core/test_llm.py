@@ -4,9 +4,7 @@ Comprehensive unit tests for OmniMemory LLM connection and retry logic.
 
 import pytest
 import os
-import time
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from typing import List
+from unittest.mock import Mock, AsyncMock, patch
 
 from omnimemory.core.llm import LLMConnection, retry_with_backoff
 
@@ -70,7 +68,6 @@ class TestRetryWithBackoff:
     def test_use_exponential_backoff(self):
         """Test use exponential backoff."""
         delays = []
-        original_sleep = time.sleep
 
         def mock_sleep(delay):
             delays.append(delay)
@@ -85,7 +82,7 @@ class TestRetryWithBackoff:
             return "success"
 
         with patch("omnimemory.core.llm.time.sleep", side_effect=mock_sleep):
-            result = test_func()
+            test_func()
 
         assert len(delays) == 2
         assert delays[0] >= 0.1
@@ -109,7 +106,7 @@ class TestRetryWithBackoff:
 
         with patch("omnimemory.core.llm.time.sleep", side_effect=mock_sleep):
             with patch("omnimemory.core.llm.random.uniform", return_value=0.05):
-                result = test_func()
+                test_func()
 
         assert len(delays) == 1
         assert delays[0] >= 1.0
@@ -134,7 +131,7 @@ class TestRetryWithBackoff:
 
         with patch("omnimemory.core.llm.time.sleep", side_effect=mock_sleep):
             with patch("omnimemory.core.llm.random.uniform", return_value=0.0):
-                result = test_func()
+                test_func()
 
         assert len(delays) == 2
         assert delays[0] <= 1.0
@@ -220,7 +217,7 @@ class TestRetryWithBackoff:
             return "success"
 
         with patch("omnimemory.core.llm.logger") as mock_logger:
-            result = test_func()
+            test_func()
             assert mock_logger.warning.called
             assert mock_logger.info.called
 
@@ -349,6 +346,7 @@ class TestLLMConnection:
             {"LLM_API_KEY": "test-key", "LLM_PROVIDER": "openai", "LLM_MODEL": "gpt-4"},
         ):
             conn = LLMConnection()
+            assert isinstance(conn, LLMConnection)
             assert os.environ.get("LITELLM_LOGGING") == "False"
             assert os.environ.get("LITELLM_LOGGING_FAILSAFE") == "False"
 
@@ -492,7 +490,7 @@ class TestLLMConnection:
     def test_set_embedding_api_key_providers_without_key(self):
         """Test handle providers without API keys (Bedrock, Vertex AI)."""
         conn = LLMConnection()
-        with patch("omnimemory.core.llm.logger") as mock_logger:
+        with patch("omnimemory.core.llm.logger"):
             conn._set_embedding_api_key("bedrock", "test-key")
             conn._set_embedding_api_key("vertex_ai", "test-key")
 
@@ -614,7 +612,7 @@ class TestLLMConnection:
 
             with patch(
                 "omnimemory.core.llm.litellm.embedding", return_value=mock_response
-            ) as mock_embedding:
+            ):
                 result = conn.embedding_call_sync("test text")
                 assert result == mock_response
 
@@ -630,7 +628,7 @@ class TestLLMConnection:
 
             with patch(
                 "omnimemory.core.llm.litellm.completion", return_value=mock_response
-            ) as mock_completion:
+            ):
                 result = conn.llm_call_sync([{"role": "user", "content": "test"}])
                 assert result == mock_response
 
@@ -971,7 +969,7 @@ class TestLLMConnection:
                 "omnimemory.core.llm.litellm.aembedding", new_callable=AsyncMock
             ) as mock_aembedding:
                 mock_aembedding.return_value = mock_response
-                result = await conn.embedding_call("test")
+                _ = await conn.embedding_call("test")
                 call_args = mock_aembedding.call_args
                 assert call_args[1].get("input_type") == "search_document"
 
@@ -995,7 +993,7 @@ class TestLLMConnection:
                 "omnimemory.core.llm.litellm.aembedding", new_callable=AsyncMock
             ) as mock_aembedding:
                 mock_aembedding.return_value = mock_response
-                result = await conn.embedding_call("test")
+                _ = await conn.embedding_call("test")
                 call_args = mock_aembedding.call_args
                 assert "dimensions" not in call_args[1]
 
@@ -1115,7 +1113,7 @@ class TestLLMConnection:
                 "omnimemory.core.llm.litellm.acompletion", new_callable=AsyncMock
             ) as mock_acompletion:
                 mock_acompletion.return_value = mock_response
-                result = await conn.llm_call(
+                _ = await conn.llm_call(
                     [{"role": "user", "content": "test"}], tools=tools
                 )
                 call_args = mock_acompletion.call_args
@@ -1141,7 +1139,7 @@ class TestLLMConnection:
                 "omnimemory.core.llm.litellm.acompletion", new_callable=AsyncMock
             ) as mock_acompletion:
                 mock_acompletion.return_value = mock_response
-                result = await conn.llm_call([{"role": "user", "content": "test"}])
+                _ = await conn.llm_call([{"role": "user", "content": "test"}])
                 call_args = mock_acompletion.call_args
                 assert call_args[1].get("stop") == ["\n\nObservation:"]
 
@@ -1179,7 +1177,7 @@ class TestLLMConnection:
             with patch(
                 "omnimemory.core.llm.litellm.completion", return_value=mock_response
             ) as mock_completion:
-                result = conn.llm_call_sync(
+                _ = conn.llm_call_sync(
                     [{"role": "user", "content": "test"}], tools=tools
                 )
                 call_args = mock_completion.call_args
@@ -1203,7 +1201,7 @@ class TestLLMConnection:
             with patch(
                 "omnimemory.core.llm.litellm.completion", return_value=mock_response
             ) as mock_completion:
-                result = conn.llm_call_sync([{"role": "user", "content": "test"}])
+                _ = conn.llm_call_sync([{"role": "user", "content": "test"}])
                 call_args = mock_completion.call_args
                 assert call_args[1].get("stop") == ["\n\nObservation:"]
 

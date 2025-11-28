@@ -2,9 +2,12 @@
 OmniMemory Configuration Module
 """
 
-from decouple import config
+try:
+    config
+except NameError:
+    from decouple import config as config
 
-DEFAULT_MAX_MESSAGES = config("OMNIMEMORY_DEFAULT_MAX_MESSAGES", cast=int)
+DEFAULT_MAX_MESSAGES = config("OMNIMEMORY_DEFAULT_MAX_MESSAGES", default=10, cast=int)
 RECALL_THRESHOLD = config("OMNIMEMORY_RECALL_THRESHOLD", default=0.3, cast=float)
 COMPOSITE_SCORE_THRESHOLD = config(
     "OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD", default=0.5, cast=float

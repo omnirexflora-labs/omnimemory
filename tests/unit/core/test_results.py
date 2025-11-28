@@ -2,7 +2,6 @@
 Comprehensive unit tests for OmniMemory result types.
 """
 
-import pytest
 from omnimemory.core.results import MemoryOperationResult, BatchOperationResult
 
 

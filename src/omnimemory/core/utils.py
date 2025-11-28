@@ -6,10 +6,13 @@ import math
 import time
 from threading import RLock
 from rapidfuzz import fuzz, process
-from typing import Any, List, Optional, Tuple, Dict
+from typing import Any, List, Optional, Tuple, Dict, TYPE_CHECKING
 from omnimemory.core.logger_utils import get_logger
 from datetime import datetime, timezone
+from omnimemory.core.schemas import UserMessages, Message, MemoryBatcherMessage
 
+if TYPE_CHECKING:
+    from omnimemory.sdk import OmniMemorySDK
 
 logger = get_logger(name="omnimemory.core.utils")
 
@@ -148,7 +151,7 @@ def chunk_text_by_tokens(
 
         return chunks
 
-    except Exception as e:
+    except Exception:
         char_chunk_size = chunk_size * 4
         char_overlap = overlap * 4
         chunks = []
@@ -164,7 +167,7 @@ def chunk_text_by_tokens(
 
 def estimate_chunking_stats(
     text: str, chunk_size: int = 500, overlap: int = 50, model_name: str = "gpt-4"
-) -> dict:
+) -> Dict[str, Any]:
     """
     Get statistics about how text will be chunked without actually chunking it.
 
@@ -211,6 +214,18 @@ def estimate_chunking_stats(
 
 
 def normalize_token(token: str) -> str:
+    """
+    Normalize a token string for fuzzy matching.
+
+    Converts to lowercase, replaces hyphens/underscores with spaces,
+    removes non-alphanumeric characters, and normalizes whitespace.
+
+    Args:
+        token: Input token string to normalize.
+
+    Returns:
+        Normalized token string.
+    """
     token = token.lower()
     token = re.sub(r"[-_]", " ", token)
     token = re.sub(r"[^a-z0-9\s]", "", token)
@@ -330,13 +345,16 @@ def clean_and_parse_json(json_string: str) -> Any:
             raise
 
 
-def fuzzy_dedup(items: List[str], threshold: int = None) -> List[str]:
+def fuzzy_dedup(items: List[str], threshold: Optional[int] = None) -> List[str]:
     """
     Deduplicate list of strings by fuzzy similarity after normalization.
 
     Args:
-        items: List of strings to deduplicate
-        threshold: Minimum similarity score (0-100, default: 75)
+        items: List of strings to deduplicate.
+        threshold: Minimum similarity score (0-100, default: 75).
+
+    Returns:
+        List of deduplicated strings.
     """
     if threshold is None:
         threshold = _FUZZY_DEDUP_THRESHOLD
@@ -365,29 +383,179 @@ def fuzzy_dedup(items: List[str], threshold: int = None) -> List[str]:
     return deduped
 
 
-def format_conversation(messages: List[Any]) -> str:
-    """Format conversation messages into a single text string."""
-    formatted_messages = []
-    for msg in messages:
-        if hasattr(msg, "role") and hasattr(msg, "content"):
-            role = msg.role
-            content = msg.content
-            timestamp = getattr(msg, "timestamp", "")
-            metadata = getattr(msg, "metadata", None)
-        elif isinstance(msg, dict):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            timestamp = msg.get("timestamp", "")
-            metadata = msg.get("metadata", None)
+def format_conversation(messages: List[Any] | str | Any) -> str:
+    """
+    Format conversation messages into a single text string.
+
+    This is the single source of truth for message formatting. Handles:
+    - Structured messages: List of Message objects or dicts with role/content
+    - Unstructured text: Plain string (packaged as user message)
+    - UserMessages objects: Extracts messages list and formats
+
+    Args:
+        messages: Can be:
+            - List[Message] or List[Dict]: Structured messages
+            - str: Unstructured text (packaged as "user: {text}")
+            - UserMessages: Object with messages attribute
+
+    Returns:
+        Formatted string in "role: content" format, one per line
+    """
+    if isinstance(messages, str):
+        return f"user: {messages.strip()}"
+
+    if hasattr(messages, "messages") and hasattr(messages, "app_id"):
+        messages = messages.messages
+
+    if isinstance(messages, list):
+        formatted_parts = []
+        for msg in messages:
+            if hasattr(msg, "role") and hasattr(msg, "content"):
+                role = msg.role
+                content = msg.content
+                formatted_parts.append(f"{role}: {content}")
+            elif isinstance(msg, dict):
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                formatted_parts.append(f"{role}: {content}")
+            else:
+                formatted_parts.append(f"user: {str(msg)}")
+        return "\n".join(formatted_parts)
+
+    return f"user: {str(messages)}"
+
+
+class _MemoryBatcher:
+    """
+    Utility helper that buffers messages until the configured threshold.
+
+    Automatically flushes messages to memory when the buffer reaches max_messages.
+    """
+
+    def __init__(
+        self,
+        sdk: "OmniMemorySDK",
+        app_id: str,
+        user_id: str,
+        session_id: Optional[str],
+        max_messages: int,
+    ) -> None:
+        """
+        Initialize MemoryBatcher.
+
+        Args:
+            sdk: OmniMemorySDK instance for adding memories.
+            app_id: Application identifier.
+            user_id: User identifier.
+            session_id: Optional session identifier.
+            max_messages: Maximum number of messages before auto-flush.
+        """
+        self.sdk = sdk
+        self.app_id = app_id
+        self.user_id = user_id
+        self.session_id = session_id
+        self.max_messages = max_messages
+        self._buffer: List[Dict[str, str]] = []
+        self._last_delivery: Optional[str] = None
+        self._last_task_id: Optional[str] = None
+
+    @property
+    def pending_count(self) -> int:
+        """
+        Get the number of pending messages in the buffer.
+
+        Returns:
+            Number of messages currently buffered.
+        """
+        return len(self._buffer)
+
+    @property
+    def can_cleanup(self) -> bool:
+        """
+        Check if the batcher can be safely cleaned up.
+
+        Returns:
+            True if buffer is empty, False otherwise.
+        """
+        return not self._buffer
+
+    def status_dict(self, status_override: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get status dictionary for the batcher.
+
+        Args:
+            status_override: Optional status string to override default status.
+
+        Returns:
+            Dictionary containing batcher status information.
+        """
+        if status_override:
+            status = status_override
         else:
-            continue
-        meta_str = f" | metadata: {metadata}" if metadata else ""
-        formatted_messages.append(f"[{timestamp}] {role}: {content}{meta_str}")
-    return "\n".join(formatted_messages)
+            status = "pending" if self._buffer else "empty"
+        return {
+            "app_id": self.app_id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "pending_messages": len(self._buffer),
+            "batch_size": self.max_messages,
+            "status": status,
+            "last_delivery": self._last_delivery,
+            "last_task_id": self._last_task_id,
+        }
+
+    async def add_messages(
+        self, messages: List["MemoryBatcherMessage"]
+    ) -> Dict[str, Any]:
+        """
+        Add messages to the buffer and flush if threshold is reached.
+
+        Args:
+            messages: List of MemoryBatcherMessage objects to add.
+
+        Returns:
+            Status dictionary with current batcher state.
+        """
+        status = None
+        for msg in messages:
+            payload = msg.model_dump()
+            self._buffer.append(
+                {"role": payload["role"], "content": payload["content"]}
+            )
+            if len(self._buffer) == self.max_messages:
+                status = await self._flush_full_batch()
+        return self.status_dict(status_override=status)
+
+    async def _flush_full_batch(self) -> str:
+        """
+        Flush the current buffer to memory storage.
+
+        Returns:
+            Status string indicating flush completion.
+        """
+        user_message = UserMessages(
+            app_id=self.app_id,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            messages=[Message(**msg) for msg in self._buffer],
+        )
+        result = await self.sdk.add_memory(user_message)
+        self._buffer.clear()
+        self._last_task_id = result.get("task_id")
+        self._last_delivery = "add_memory"
+        return "flushed"
 
 
 def parse_iso_to_datetime(timestamp_str: str) -> Optional[datetime]:
-    """Convert an ISO 8601 timestamp string to a UTC datetime object."""
+    """
+    Convert an ISO 8601 timestamp string to a UTC datetime object.
+
+    Args:
+        timestamp_str: ISO 8601 formatted timestamp string.
+
+    Returns:
+        UTC datetime object, or None if parsing fails or string is empty.
+    """
     if not timestamp_str:
         return None
     try:
@@ -422,7 +590,9 @@ def parse_timestamp(timestamp_str: str) -> datetime:
 
 
 def calculate_recency_score(
-    created_at_str: str, updated_at_str: str, max_age_hours: int = None
+    created_at_str: Optional[str],
+    updated_at_str: Optional[str],
+    max_age_hours: Optional[int] = None,
 ) -> float:
     """
     Calculate recency score based on how recent the memory is.
@@ -543,8 +713,8 @@ def calculate_importance_score(metadata: Dict[str, Any]) -> float:
         ("richness", richness_score, importance_weights["richness"])
     )
 
-    total_weight = 0
-    weighted_sum = 0
+    total_weight: float = 0.0
+    weighted_sum: float = 0.0
 
     for factor_name, score, weight in importance_factors:
         weighted_sum += score * weight
@@ -623,12 +793,25 @@ def determine_relationship_type(
 
 
 def get_embedding_cache_key(text: str) -> str:
-    """Generate cache key for text embedding."""
+    """
+    Generate cache key for text embedding.
+
+    Args:
+        text: Input text to generate cache key for.
+
+    Returns:
+        SHA256 hash of the text as a hexadecimal string.
+    """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _prune_embedding_cache(now: float) -> None:
-    """Remove expired entries from the in-memory embedding cache."""
+    """
+    Remove expired entries from the in-memory embedding cache.
+
+    Args:
+        now: Current timestamp in seconds since epoch.
+    """
     expired_keys = [
         key for key, (_, expiry) in _EMBEDDING_CACHE.items() if expiry <= now
     ]
@@ -637,7 +820,15 @@ def _prune_embedding_cache(now: float) -> None:
 
 
 def get_cached_embedding(text: str) -> Optional[List[float]]:
-    """Get cached embedding from in-memory cache if available."""
+    """
+    Get cached embedding from in-memory cache if available.
+
+    Args:
+        text: Input text to retrieve embedding for.
+
+    Returns:
+        Cached embedding vector if available and not expired, None otherwise.
+    """
     cache_key = f"{_EMBEDDING_CACHE_PREFIX}{get_embedding_cache_key(text)}"
     now = time.time()
 
@@ -654,7 +845,16 @@ def get_cached_embedding(text: str) -> Optional[List[float]]:
 
 
 def cache_embedding(text: str, embedding: List[float]) -> None:
-    """Cache embedding in in-memory cache with TTL."""
+    """
+    Cache embedding in in-memory cache with TTL.
+
+    Automatically prunes expired entries and evicts oldest entries
+    if cache exceeds maximum size.
+
+    Args:
+        text: Input text that was embedded.
+        embedding: Embedding vector to cache.
+    """
     if not embedding:
         return
 
@@ -673,8 +873,8 @@ def cache_embedding(text: str, embedding: List[float]) -> None:
 
 
 def create_zettelkasten_memory_note(
-    episodic_data: Dict,
-    summary_data: Dict,
+    episodic_data: Dict[str, Any],
+    summary_data: Dict[str, Any],
 ) -> str:
     """
     Create a Zettelkasten-style memory note from episodic and summary data.
@@ -685,9 +885,13 @@ def create_zettelkasten_memory_note(
     2. Behavioral insights (from episodic)
     3. Guidance for future interactions (from episodic)
     4. Tags and metadata (from summary)
+
     Args:
-        episodic_data: Episodic memory data dictionary
-        summary_data: Summary memory data dictionary
+        episodic_data: Episodic memory data dictionary.
+        summary_data: Summary memory data dictionary.
+
+    Returns:
+        Formatted Zettelkasten-style memory note string.
     """
     sections = []
 
@@ -837,11 +1041,11 @@ def create_zettelkasten_memory_note(
 
 def prepare_memory_for_storage(
     note_text: str,
-    summary_data: Dict,
-    episodic_data: Dict,
+    summary_data: Dict[str, Any],
+    episodic_data: Dict[str, Any],
     message_count: int = 0,
-    timestamp: str = None,
-) -> Dict:
+    timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Prepare memory note for vector database storage.
 
@@ -851,6 +1055,16 @@ def prepare_memory_for_storage(
 
     Note: When retrieving, only return the 'text' field to the agent.
     The metadata is used internally for better search/ranking.
+
+    Args:
+        note_text: Zettelkasten-formatted memory note text.
+        summary_data: Summary memory data dictionary.
+        episodic_data: Episodic memory data dictionary.
+        message_count: Number of messages in the conversation (default: 0).
+        timestamp: ISO format timestamp string (default: current time).
+
+    Returns:
+        Dictionary containing 'text' and 'metadata' keys for storage.
     """
     from datetime import datetime
 
@@ -877,5 +1091,122 @@ def prepare_memory_for_storage(
             "follow_up_areas": [
                 f for f in metadata_obj.get("follow_ups", []) if f and f != "N/A"
             ],
+        },
+    }
+
+
+def create_agent_memory_note(agent_data: Dict[str, Any]) -> str:
+    """
+    Create a simple memory note from agent add_memory data.
+    This creates a concise note optimized for semantic search.
+
+    Structure:
+    1. Main narrative with header
+    2. Tags and metadata
+
+    Args:
+        agent_data: Agent memory data dictionary.
+
+    Returns:
+        Formatted memory note string.
+    """
+    sections = []
+
+    # Main narrative with header
+    narrative = agent_data.get("narrative", "")
+    if narrative and narrative != "N/A":
+        sections.append(f"## Note\n{narrative}")
+
+    # Footer with metadata
+    footer_parts = []
+
+    retrieval = agent_data.get("retrieval", {})
+    if retrieval:
+        tags = retrieval.get("tags", [])
+        keywords = retrieval.get("keywords", [])
+
+        if tags and any(t and t != "N/A" for t in tags):
+            clean_tags = [str(t).strip() for t in tags if t and str(t).strip() != "N/A"]
+            if clean_tags:
+                footer_parts.append(f"Tags: {', '.join(clean_tags)}")
+
+        if keywords and any(k and k != "N/A" for k in keywords):
+            clean_kw = [
+                str(k).strip() for k in keywords if k and str(k).strip() != "N/A"
+            ]
+            if clean_kw:
+                footer_parts.append(f"Keywords: {', '.join(clean_kw)}")
+
+    metadata = agent_data.get("metadata", {})
+    if metadata:
+        depth = metadata.get("depth", "")
+        follow_ups = metadata.get("follow_ups", [])
+
+        meta_text = []
+        if depth and depth != "N/A":
+            meta_text.append(f"Depth: {depth}")
+
+        if follow_ups and any(f and f != "N/A" for f in follow_ups):
+            clean_follow = [f for f in follow_ups if f and f != "N/A"]
+            if clean_follow:
+                meta_text.append(f"Follow-up: {'; '.join(clean_follow)}")
+
+        if meta_text:
+            footer_parts.append(" | ".join(meta_text))
+
+    if footer_parts:
+        sections.append(f"---\n{' | '.join(footer_parts)}")
+
+    full_note = "\n\n".join(sections)
+
+    # Clean up extra whitespace
+    full_note = re.sub(r"\n{3,}", "\n\n", full_note)
+    full_note = re.sub(r" {2,}", " ", full_note)
+    full_note = full_note.strip()
+
+    return full_note
+
+
+def prepare_agent_memory_for_storage(
+    note_text: str,
+    agent_data: Dict[str, Any],
+    timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Prepare agent memory note for vector database storage.
+    Returns a dict with:
+    - text: The formatted note (for embedding and retrieval)
+    - metadata: Structured data for filtering, ranking, and hybrid search
+
+    Note: When retrieving, only return the 'text' field to the agent.
+    The metadata is used internally for better search/ranking.
+
+    Args:
+        note_text: Formatted agent memory note text.
+        agent_data: Agent memory data dictionary.
+        timestamp: ISO format timestamp string (default: current time).
+
+    Returns:
+        Dictionary containing 'text' and 'metadata' keys for storage.
+    """
+    from datetime import datetime
+
+    retrieval = agent_data.get("retrieval", {})
+    metadata_obj = agent_data.get("metadata", {})
+
+    return {
+        "text": note_text,
+        "metadata": {
+            "tags": [t for t in retrieval.get("tags", []) if t and t != "N/A"],
+            "keywords": [k for k in retrieval.get("keywords", []) if k and k != "N/A"],
+            "query_hooks": [
+                q for q in retrieval.get("queries", []) if q and q != "N/A"
+            ],
+            "content_depth": metadata_obj.get("depth", "medium"),
+            "timestamp": timestamp or datetime.now().isoformat(),
+            "follow_up_areas": [
+                f for f in metadata_obj.get("follow_ups", []) if f and f != "N/A"
+            ],
+            "source": "agent_memory",
         },
     }

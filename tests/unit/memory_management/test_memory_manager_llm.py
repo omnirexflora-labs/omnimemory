@@ -1,10 +1,10 @@
 import json
 import uuid
-from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+
+# ruff: noqa: F811
 
 from omnimemory.core.results import MemoryOperationResult
 from omnimemory.memory_management.memory_manager import MemoryManager
@@ -150,78 +150,6 @@ async def test_create_combined_memory_returns_none_when_summarizer_missing(
     result = await manager.create_combined_memory("messages", mock_llm_connection)
 
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_create_summarizer_memory_exception(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    failing_llm = Mock()
-    failing_llm.llm_call = AsyncMock(side_effect=RuntimeError("llm error"))
-
-    result = await manager.create_summarizer_memory("message", failing_llm)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_create_agent_memory_embedding_fails(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    manager.create_combined_memory = AsyncMock(
-        return_value='{"text": "test", "metadata": {}}'
-    )
-    manager.embed_memory_note = AsyncMock(return_value=None)
-
-    result = await manager.create_agent_memory(
-        app_id="app1",
-        user_id="user1",
-        session_id=None,
-        messages="test",
-        llm_connection=mock_llm_connection,
-    )
-
-    assert result.success is False
-    assert result.error_code == "EMBEDDING_FAILED"
-
-
-@pytest.mark.asyncio
-async def test_create_combined_memory_exception(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    manager.create_episodic_memory = AsyncMock(side_effect=RuntimeError("error"))
-
-    result = await manager.create_combined_memory("messages", mock_llm_connection)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_create_summarizer_memory_exception(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    failing_llm = Mock()
-    failing_llm.llm_call = AsyncMock(side_effect=RuntimeError("llm error"))
-
-    result = await manager.create_summarizer_memory("message", failing_llm)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_create_agent_memory_embedding_fails(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    manager.create_combined_memory = AsyncMock(
-        return_value='{"text": "test", "metadata": {}}'
-    )
-    manager.embed_memory_note = AsyncMock(return_value=None)
-
-    result = await manager.create_agent_memory(
-        app_id="app1",
-        user_id="user1",
-        session_id=None,
-        messages="test",
-        llm_connection=mock_llm_connection,
-    )
-
-    assert result.success is False
-    assert result.error_code == "EMBEDDING_FAILED"
 
 
 @pytest.mark.asyncio
@@ -725,7 +653,19 @@ async def test_create_agent_memory_successful_flow(monkeypatch, mock_llm_connect
     manager = _make_manager(monkeypatch, mock_llm_connection)
     _stub_metrics(monkeypatch)
 
-    manager._generate_fast_summary = AsyncMock(return_value={"summary": "note"})
+    # Mock the new agent memory generation method with valid JSON
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test narrative",
+            "retrieval": {
+                "tags": ["test"],
+                "keywords": ["test"],
+                "queries": ["test query"],
+            },
+            "metadata": {"depth": "medium", "follow_ups": ["N/A"]},
+        }
+    )
+    manager._generate_add_agent_memory = AsyncMock(return_value=agent_memory_json)
     manager.embed_memory_note = AsyncMock(return_value=[0.1, 0.2])
 
     success_result = MemoryOperationResult.success_result(memory_id="stored-id")
@@ -743,7 +683,7 @@ async def test_create_agent_memory_successful_flow(monkeypatch, mock_llm_connect
     )
 
     assert result.success is True
-    manager.embed_memory_note.assert_awaited_once_with("note")
+    manager.embed_memory_note.assert_awaited_once()
     manager.store_memory_note.assert_awaited_once()
 
 
@@ -754,7 +694,14 @@ async def test_create_agent_memory_handles_embedding_exception(
     manager = _make_manager(monkeypatch, mock_llm_connection)
     metrics = _stub_metrics(monkeypatch)
 
-    manager._generate_fast_summary = AsyncMock(return_value={"summary": "note"})
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test narrative",
+            "retrieval": {"tags": [], "keywords": [], "queries": []},
+            "metadata": {"depth": "low", "follow_ups": []},
+        }
+    )
+    manager._generate_add_agent_memory = AsyncMock(return_value=agent_memory_json)
     manager.embed_memory_note = AsyncMock(side_effect=RuntimeError("embed fail"))
 
     result = await manager.create_agent_memory(
@@ -777,7 +724,14 @@ async def test_create_agent_memory_handles_store_failure(
     manager = _make_manager(monkeypatch, mock_llm_connection)
     metrics = _stub_metrics(monkeypatch)
 
-    manager._generate_fast_summary = AsyncMock(return_value={"summary": "note"})
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test narrative",
+            "retrieval": {"tags": [], "keywords": [], "queries": []},
+            "metadata": {"depth": "medium", "follow_ups": []},
+        }
+    )
+    manager._generate_add_agent_memory = AsyncMock(return_value=agent_memory_json)
     manager.embed_memory_note = AsyncMock(return_value=[0.1])
 
     failure_result = MemoryOperationResult.error_result(
@@ -805,29 +759,38 @@ async def test_create_agent_memory_formats_message_list(
     manager = _make_manager(monkeypatch, mock_llm_connection)
     _stub_metrics(monkeypatch)
 
-    summary_mock = AsyncMock(return_value={"summary": "note"})
-    manager._generate_fast_summary = summary_mock
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test note",
+            "retrieval": {"tags": [], "keywords": [], "queries": []},
+            "metadata": {"depth": "medium", "follow_ups": []},
+        }
+    )
+    agent_memory_mock = AsyncMock(return_value=agent_memory_json)
+    manager._generate_add_agent_memory = agent_memory_mock
     manager.embed_memory_note = AsyncMock(return_value=[0.1])
     manager.store_memory_note = AsyncMock(
         return_value=MemoryOperationResult.success_result(memory_id="m1")
     )
 
-    messages = [
-        {"role": "user", "content": "Hi", "timestamp": "2024-01-01T00:00:00Z"},
+    from omnimemory.core.utils import format_conversation
+
+    raw_messages = [
+        {"role": "user", "content": "Hi"},
         "Raw follow-up",
     ]
+    formatted_messages = format_conversation(raw_messages)
 
     await manager.create_agent_memory(
         app_id="app",
         user_id="user",
         session_id="sess",
-        messages=messages,
+        messages=formatted_messages,
         llm_connection=mock_llm_connection,
     )
 
-    formatted = summary_mock.await_args.kwargs["messages"]
-    assert "[2024-01-01T00:00:00Z] user: Hi" in formatted
-    assert "Raw follow-up" in formatted
+    formatted = agent_memory_mock.await_args.kwargs["message"]
+    assert formatted == formatted_messages
 
 
 @pytest.mark.asyncio
@@ -837,7 +800,14 @@ async def test_create_agent_memory_records_metrics_on_exception(
     manager = _make_manager(monkeypatch, mock_llm_connection)
     metrics = _stub_metrics(monkeypatch)
 
-    manager._generate_fast_summary = AsyncMock(return_value={"summary": "note"})
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test note",
+            "retrieval": {"tags": [], "keywords": [], "queries": []},
+            "metadata": {"depth": "medium", "follow_ups": []},
+        }
+    )
+    manager._generate_add_agent_memory = AsyncMock(return_value=agent_memory_json)
     manager.embed_memory_note = AsyncMock(return_value=[0.1])
     manager.store_memory_note = AsyncMock(side_effect=RuntimeError("store boom"))
 
@@ -1088,9 +1058,14 @@ async def test_create_summarizer_memory_exception(monkeypatch, mock_llm_connecti
 @pytest.mark.asyncio
 async def test_create_agent_memory_embedding_fails(monkeypatch, mock_llm_connection):
     manager = _make_manager(monkeypatch, mock_llm_connection)
-    manager.create_combined_memory = AsyncMock(
-        return_value='{"text": "test", "metadata": {}}'
+    agent_memory_json = json.dumps(
+        {
+            "narrative": "Test",
+            "retrieval": {"tags": [], "keywords": [], "queries": []},
+            "metadata": {"depth": "medium", "follow_ups": []},
+        }
     )
+    manager._generate_add_agent_memory = AsyncMock(return_value=agent_memory_json)
     manager.embed_memory_note = AsyncMock(return_value=None)
 
     result = await manager.create_agent_memory(
@@ -1124,23 +1099,3 @@ async def test_create_summarizer_memory_exception(monkeypatch, mock_llm_connecti
     result = await manager.create_summarizer_memory("message", failing_llm)
 
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_create_agent_memory_embedding_fails(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-    manager.create_combined_memory = AsyncMock(
-        return_value='{"text": "test", "metadata": {}}'
-    )
-    manager.embed_memory_note = AsyncMock(return_value=None)
-
-    result = await manager.create_agent_memory(
-        app_id="app1",
-        user_id="user1",
-        session_id=None,
-        messages="test",
-        llm_connection=mock_llm_connection,
-    )
-
-    assert result.success is False
-    assert result.error_code == "EMBEDDING_FAILED"

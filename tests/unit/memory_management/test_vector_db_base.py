@@ -3,8 +3,7 @@ Unit tests for VectorDBBase class.
 """
 
 import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
 from types import SimpleNamespace
 from typing import List, Dict, Any
 
@@ -101,7 +100,7 @@ class TestVectorDBBaseInitialization:
         db = _TestableVectorDB(llm_connection=mock_llm_connection)
 
         assert db.llm_connection == mock_llm_connection
-        assert db.enabled == False
+        assert not db.enabled
         assert db._embed_model is None
         assert db._vector_size is None
 
@@ -110,7 +109,7 @@ class TestVectorDBBaseInitialization:
         db = _TestableVectorDB()
 
         assert db.llm_connection is None
-        assert db.enabled == False
+        assert not db.enabled
 
     def test_init_with_additional_kwargs(self, mock_llm_connection):
         """Test initialization with additional kwargs (should set as attributes)."""
@@ -128,14 +127,14 @@ class TestVectorDBBaseInitialization:
         db = _TestableVectorDB(llm_connection=None)
 
         assert db.llm_connection is None
-        assert db.enabled == False
+        assert not db.enabled
 
     def test_init_with_empty_kwargs(self, mock_llm_connection):
         """Test initialization with empty kwargs."""
         db = _TestableVectorDB(llm_connection=mock_llm_connection)
 
         assert db.llm_connection == mock_llm_connection
-        assert db.enabled == False
+        assert not db.enabled
 
 
 class TestEmbedText:
@@ -1203,7 +1202,7 @@ class TestEmbedTextWithChunking:
             side_effect=[None, [0.2] * 1536],
         ):
             with patch("omnimemory.memory_management.vector_db_base.cache_embedding"):
-                result1 = await db.embed_text(sample_text)
+                _ = await db.embed_text(sample_text)
                 result2 = await db.embed_text(sample_text)
 
         assert mock_llm_connection.embedding_call.call_count == 1
@@ -1290,7 +1289,6 @@ class TestEmbedTextWithChunking:
     @pytest.mark.asyncio
     async def test_embedding_with_nan_or_inf_values(self, mock_llm_connection):
         """Test handling of embedding with NaN or Inf values."""
-        import math
 
         db = _TestableVectorDB(llm_connection=mock_llm_connection)
 

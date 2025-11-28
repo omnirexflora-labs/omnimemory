@@ -19,14 +19,14 @@ class MemoryOperationResult:
 
     @classmethod
     def success_result(
-        cls, memory_id: str = None, **details
+        cls, memory_id: Optional[str] = None, **details: Any
     ) -> "MemoryOperationResult":
         """Create a successful result."""
         return cls(success=True, memory_id=memory_id, details=details)
 
     @classmethod
     def error_result(
-        cls, error_code: str, error_message: str, **details
+        cls, error_code: str, error_message: str, **details: Any
     ) -> "MemoryOperationResult":
         """Create an error result."""
         return cls(
@@ -38,7 +38,7 @@ class MemoryOperationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API responses."""
-        result = {
+        result: Dict[str, Any] = {
             "success": self.success,
         }
         if self.memory_id:
@@ -99,7 +99,7 @@ class BatchOperationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API responses."""
-        result = {
+        result: Dict[str, Any] = {
             "success": self.success,
             "total_items": self.total_items,
             "succeeded": self.succeeded,

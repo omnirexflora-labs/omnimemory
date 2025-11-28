@@ -1,22 +1,24 @@
 """
-Background daemon that keeps OmniMemorySDK initialized for CLI commands (async version).
+Background daemon that keeps OmniMemorySDK initialized for CLI commands .
 """
 
-from multiprocessing.connection import Listener
+import asyncio
 import os
 import signal
-import traceback
-import asyncio
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Coroutine
+from multiprocessing.connection import Listener
+from types import FrameType
+from typing import Any, Coroutine, Dict, Optional, TypeVar
 
 from omnimemory.sdk import OmniMemorySDK
 from omnimemory.core.schemas import (
     AddUserMessageRequest,
     ConversationSummaryRequest,
     AgentMemoryRequest,
+    MemoryBatcherAppendRequest,
 )
 
 from .daemon_constants import (
@@ -29,16 +31,19 @@ from .daemon_constants import (
 )
 
 
-class DaemonServer:
-    """Persistent server that executes OmniMemorySDK operations (async version)."""
+T = TypeVar("T")
 
-    def __init__(self):
+
+class DaemonServer:
+    """Persistent server that executes OmniMemorySDK operations ."""
+
+    def __init__(self) -> None:
         ensure_state_dir()
         self._sdk: Optional[OmniMemorySDK] = None
         self.listener: Optional[Listener] = None
-        self.running = True
-        self._memory_manager_ready = False
-        self._loop = asyncio.new_event_loop()
+        self.running: bool = True
+        self._memory_manager_ready: bool = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = asyncio.new_event_loop()
         self._loop_ready = threading.Event()
         self._loop_thread = threading.Thread(
             target=self._run_loop, name="omnimemory-daemon-loop", daemon=True
@@ -54,9 +59,9 @@ class DaemonServer:
             self._write_log("SDK initialized")
         return self._sdk
 
-    def start(self):
+    def start(self) -> None:
         """Start the listener loop with robust error handling."""
-        listener = None
+        listener: Optional[Listener] = None
         try:
             listener = Listener(
                 (DAEMON_HOST, DAEMON_PORT),
@@ -74,12 +79,12 @@ class DaemonServer:
                     conn = listener.accept()
                 except (OSError, EOFError) as e:
                     if not self.running:
-                        break
+                        break  # type: ignore[unreachable]
                     self._write_log(f"Connection accept error: {e}")
                     continue
                 except Exception as e:
                     if not self.running:
-                        break
+                        break  # type: ignore[unreachable]
                     self._write_log(f"Unexpected error accepting connection: {e}")
                     self._write_log(traceback.format_exc())
                     time.sleep(0.1)
@@ -116,14 +121,20 @@ class DaemonServer:
         finally:
             self._cleanup()
 
-    def _handle_signal(self, signum, frame):
-        """Signal handler to shut down gracefully."""
+    def _handle_signal(self, signum: int, frame: Optional[FrameType]) -> None:
+        """
+        Signal handler to shut down gracefully.
+
+        Args:
+            signum: POSIX signal number received.
+            frame: Current execution frame when the signal fired.
+        """
         self._write_log(f"Received signal {signum}, shutting down.")
         self.running = False
         if self.listener:
             self.listener.close()
 
-    def _initialize_memory_manager_async(self):
+    def _initialize_memory_manager_async(self) -> None:
         """Initialize memory manager in background thread."""
 
         def _init():
@@ -147,20 +158,30 @@ class DaemonServer:
         thread = threading.Thread(target=_init, daemon=True, name="daemon-init")
         thread.start()
 
-    def _run_loop(self):
+    def _run_loop(self) -> None:
         """Background event-loop runner."""
+        if self._loop is None:
+            return
         asyncio.set_event_loop(self._loop)
         self._loop_ready.set()
         self._loop.run_forever()
 
-    def _run_async(self, coro: Coroutine[Any, Any, Any]):
-        """Submit a coroutine to the background loop and wait for the result."""
+    def _run_async(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        """
+        Submit a coroutine to the background loop and wait for the result.
+
+        Args:
+            coro: Coroutine scheduled on the daemon loop.
+
+        Returns:
+            Result produced by the coroutine once completed.
+        """
         if not self._loop or not self._loop_thread.is_alive():
             raise RuntimeError("Daemon event loop is not running")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
 
-    async def _cancel_pending_tasks(self):
+    async def _cancel_pending_tasks(self) -> None:
         """Cancel all pending tasks running inside the daemon loop."""
         tasks = [
             task for task in asyncio.all_tasks() if task is not asyncio.current_task()
@@ -170,9 +191,9 @@ class DaemonServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _shutdown_loop(self):
+    def _shutdown_loop(self) -> None:
         """Stop the background event loop and join the thread."""
-        if not self._loop:
+        if self._loop is None:
             return
         try:
             asyncio.run_coroutine_threadsafe(
@@ -180,14 +201,15 @@ class DaemonServer:
             ).result(timeout=10)
         except Exception:
             pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread and self._loop_thread.is_alive():
             self._loop_thread.join(timeout=5)
-        if not self._loop.is_closed():
+        if self._loop is not None and not self._loop.is_closed():
             self._loop.close()
         self._loop = None
 
-    def _ensure_memory_manager_ready(self):
+    def _ensure_memory_manager_ready(self) -> None:
         """Ensure memory manager is initialized (lazy initialization)."""
         if not self._memory_manager_ready:
             try:
@@ -196,14 +218,22 @@ class DaemonServer:
             except Exception:
                 pass
 
-    def _update_memory_manager_flag(self):
+    def _update_memory_manager_flag(self) -> None:
         """Update cached readiness flag based on SDK state."""
         self._memory_manager_ready = (
             getattr(self.sdk, "_memory_manager", None) is not None
         )
 
     def _handle_request(self, request: Dict[str, Any]) -> Any:
-        """Handle request synchronously, running async SDK methods in event loop."""
+        """
+        Handle request synchronously, running async SDK methods in event loop.
+
+        Args:
+            request: Dictionary sent by the CLI client.
+
+        Returns:
+            Result payload to send back through the daemon socket.
+        """
         method = request.get("method")
         payload = request.get("payload") or {}
 
@@ -232,8 +262,9 @@ class DaemonServer:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         if method == "add_memory":
-            user_message = AddUserMessageRequest(**payload["user_message"])
-            result = self._run_async(self.sdk.add_memory(user_message))
+            user_message_request = AddUserMessageRequest(**payload["user_message"])
+            user_messages = user_message_request.to_user_messages()
+            result = self._run_async(self.sdk.add_memory(user_messages))
             self._ensure_memory_manager_ready()
             return result
         if method == "query_memory":
@@ -264,6 +295,9 @@ class DaemonServer:
             result = self._run_async(self.sdk.add_agent_memory(agent_request))
             self._ensure_memory_manager_ready()
             return result
+        if method == "memory_batcher_add":
+            batch_request = MemoryBatcherAppendRequest(**payload["batch_request"])
+            return self._run_async(self.sdk.memory_batcher_add(batch_request))
         if method == "shutdown":
             self.running = False
             return {"message": "Shutting down"}
@@ -275,10 +309,10 @@ class DaemonServer:
 
         raise ValueError(f"Unsupported daemon method: {method}")
 
-    def _write_pid(self):
+    def _write_pid(self) -> None:
         PID_FILE.write_text(str(os.getpid()))
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         """Cleanup resources with robust error handling."""
         try:
             if self.listener:
@@ -304,13 +338,14 @@ class DaemonServer:
 
         self._write_log("Daemon stopped")
 
-    def _write_log(self, message: str):
+    def _write_log(self, message: str) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
 
 
-def main():
+def main() -> None:
+    """Entrypoint for running the daemon service as a module."""
     server = DaemonServer()
     server.start()
 

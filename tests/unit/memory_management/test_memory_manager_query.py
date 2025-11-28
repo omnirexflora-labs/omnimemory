@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock
 
@@ -700,6 +699,8 @@ async def test_generate_memory_links_with_user_and_session_filters(
         session_id="session1",
     )
 
+    assert len(links) == 1
+    assert links[0]["memory_id"] == "m1"
     call_kwargs = handler.query_by_embedding.await_args.kwargs
     assert call_kwargs["filter_conditions"]["user_id"] == "user1"
     assert call_kwargs["filter_conditions"]["session_id"] == "session1"

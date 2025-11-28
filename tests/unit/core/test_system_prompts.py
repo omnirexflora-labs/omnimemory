@@ -2,7 +2,6 @@
 Unit tests for OmniMemory system prompts.
 """
 
-import pytest
 from omnimemory.core.system_prompts import (
     episodic_memory_constructor_system_prompt,
     summarizer_memory_constructor_system_prompt,

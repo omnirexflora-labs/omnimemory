@@ -1,19 +1,18 @@
 """
-Connection pool manager for vector database handlers (async version).
-
-Manages connection pooling at the MemoryManager/vector_db_handler level,
-not at the underlying client level. This ensures we reuse entire
-vector_db_handler instances (including their LLM connections) for queries,
-while providing dedicated handlers for write operations.
+Connection pool manager for vector database handlers
 """
 
 import asyncio
-from typing import Dict, Any, Optional, Callable
 from asyncio import Queue, QueueEmpty
 from contextlib import asynccontextmanager
-from decouple import config
+from typing import Any, AsyncGenerator, Dict, Optional, TYPE_CHECKING, cast
+
+from omnimemory.core.llm import LLMConnection
 from omnimemory.core.logger_utils import get_logger
-from . import create_vector_db_handler
+from .vector_db_factory import VectorDBFactoryRegistry
+
+if TYPE_CHECKING:
+    from .vector_db_base import VectorDBBase
 
 logger = get_logger(name="omnimemory.memory_management.connection_pool")
 
@@ -29,40 +28,65 @@ class VectorDBHandlerPool:
     Features:
     - Thread-safe connection pooling
     - Reuses vector_db_handler instances (including LLM connections)
-    - Separate handling for queries (pooled) vs writes (dedicated)
+    - Separate handling for queries (pooled) and writes (dedicated handlers)
     - Tunable capacity: adjust via VectorDBHandlerPool.get_instance(max_connections=<value>)
       depending on available resources (e.g., increase to 30 for heavy embedding loads)
     """
 
-    _instance = None
-    _lock = None
-    _class_initialized = False
+    _instance: Optional["VectorDBHandlerPool"] = None
+    _lock: Optional[Any] = None
+    _class_initialized: bool = False
 
-    def __init__(self, max_connections: int = 10):
+    def __init__(self, max_connections: int = 10) -> None:
         """
-        Initialize connection pool (async version).
+        Initialize connection pool .
 
         Args:
             max_connections: Maximum number of vector_db_handler instances in pool
         """
-        self.max_connections = max_connections
-        self._pool: Optional[Queue] = None
-        self._created_handlers = 0
-        self._active_handlers = 0
-        self._total_checkouts = 0
-        self._pending_waiters = 0
-        self._llm_connection = None
+        self.max_connections: int = max_connections
+        self._pool: Optional[Queue["VectorDBBase"]] = None
+        self._created_handlers: int = 0
+        self._active_handlers: int = 0
+        self._total_checkouts: int = 0
+        self._pending_waiters: int = 0
+        self._llm_connection: Optional[LLMConnection] = None
         self._pool_lock: Optional[asyncio.Lock] = None
-        self._initialized = False
+        self._initialized: bool = False
 
         logger.info(
             f"VectorDBHandlerPool initialized with max_connections={max_connections}"
         )
 
-    async def _create_handler(self, llm_connection: Callable):
-        """Create a new vector_db_handler instance (async version)."""
+    def _require_pool(self) -> Queue["VectorDBBase"]:
+        if self._pool is None:
+            raise RuntimeError("VectorDB handler pool is not initialized")
+        return self._pool
+
+    def _require_pool_lock(self) -> asyncio.Lock:
+        if self._pool_lock is None:
+            raise RuntimeError("VectorDB handler pool lock is not initialized")
+        return self._pool_lock
+
+    def _require_llm_connection(self) -> LLMConnection:
+        if self._llm_connection is None:
+            raise RuntimeError("LLM connection is not set for the pool")
+        return self._llm_connection
+
+    async def _create_handler(
+        self, llm_connection: LLMConnection
+    ) -> Optional["VectorDBBase"]:
+        """
+        Create a new vector_db_handler instance .
+
+        Args:
+            llm_connection: LLM connection to use for the handler.
+
+        Returns:
+            VectorDBBase instance if successful, None otherwise.
+        """
         try:
-            handler = await create_vector_db_handler(llm_connection)
+            handler = await VectorDBFactoryRegistry.create_from_env(llm_connection)
             if handler and handler.enabled:
                 return handler
             else:
@@ -72,9 +96,9 @@ class VectorDBHandlerPool:
             logger.error(f"Failed to create vector_db_handler: {e}", exc_info=True)
             return None
 
-    async def initialize_pool(self, llm_connection: Callable):
+    async def initialize_pool(self, llm_connection: LLMConnection) -> None:
         """
-        Initialize the pool with shared LLM connection (async version).
+        Initialize the pool with shared LLM connection .
 
         NOTE: This method should be called while holding the pool_lock.
         It does NOT acquire the lock itself to avoid deadlocks.
@@ -118,7 +142,9 @@ class VectorDBHandlerPool:
         )
 
     @asynccontextmanager
-    async def get_handler(self, llm_connection: Callable = None):
+    async def get_handler(
+        self, llm_connection: Optional[LLMConnection] = None
+    ) -> AsyncGenerator["VectorDBBase", None]:
         """
         Get a vector_db_handler from the pool (async context manager for queries).
 
@@ -131,6 +157,9 @@ class VectorDBHandlerPool:
 
         Yields:
             vector_db_handler instance (QdrantVectorDB, etc.)
+
+        Raises:
+            ValueError: If llm_connection is required but not provided.
         """
         instance = VectorDBHandlerPool._instance
         if instance is not None and self._pool is None:
@@ -156,7 +185,8 @@ class VectorDBHandlerPool:
                 raise ValueError("llm_connection is required for pool initialization")
             if self._pool_lock is None:
                 self._pool_lock = asyncio.Lock()
-            async with self._pool_lock:
+            pool_lock = self._require_pool_lock()
+            async with pool_lock:
                 if not self._initialized:
                     await self.initialize_pool(llm_connection)
 
@@ -173,12 +203,13 @@ class VectorDBHandlerPool:
         finally:
             if handler is not None:
                 try:
-                    await asyncio.wait_for(self._pool.put(handler), timeout=1.0)
+                    pool = self._require_pool()
+                    await asyncio.wait_for(pool.put(handler), timeout=1.0)
                     self._active_handlers -= 1
                     logger.debug(
                         "Returned handler (active=%s, available=%s, max=%s, pending=%s)",
                         self._active_handlers,
-                        self._pool.qsize(),
+                        pool.qsize(),
                         self.max_connections,
                         self._pending_waiters,
                     )
@@ -188,41 +219,57 @@ class VectorDBHandlerPool:
                 except Exception as e:
                     logger.warning(f"Failed to return handler to pool: {e}")
                     try:
-                        new_handler = await self._create_handler(self._llm_connection)
+                        llm_conn = self._require_llm_connection()
+                        new_handler = await self._create_handler(llm_conn)
                         if new_handler:
-                            await self._pool.put(new_handler)
+                            pool = self._require_pool()
+                            await pool.put(new_handler)
                     except Exception as create_error:
                         logger.error(
                             f"Failed to create replacement handler: {create_error}"
                         )
                     self._active_handlers -= 1
 
-    async def _acquire_handler_with_retry(self) -> Any:
-        """Try to acquire handler with retries/backoff when pool is exhausted."""
+    async def _acquire_handler_with_retry(self) -> "VectorDBBase":
+        """
+        Try to acquire handler with retries/backoff when pool is exhausted.
+
+        Returns:
+            VectorDBBase handler instance.
+
+        Raises:
+            TimeoutError: If handler cannot be acquired after max retries.
+        """
         retries = 0
         max_retries = 5
         backoff = 0.5
+        handler: Optional["VectorDBBase"] = None
 
         while True:
             try:
                 self._pending_waiters += 1
-                handler = await asyncio.wait_for(self._pool.get(), timeout=5.0)
+                pool = self._require_pool()
+                handler = cast(
+                    "VectorDBBase", await asyncio.wait_for(pool.get(), timeout=5.0)
+                )
                 self._pending_waiters -= 1
                 self._active_handlers += 1
                 self._total_checkouts += 1
                 logger.debug(
                     "Checked-out handler (active=%s, available=%s, max=%s, pending=%s)",
                     self._active_handlers,
-                    self._pool.qsize(),
+                    pool.qsize(),
                     self.max_connections,
                     self._pending_waiters,
                 )
                 return handler
             except asyncio.TimeoutError:
                 self._pending_waiters = max(0, self._pending_waiters - 1)
-                async with self._pool_lock:
+                pool_lock = self._require_pool_lock()
+                async with pool_lock:
                     if self._created_handlers < self.max_connections:
-                        handler = await self._create_handler(self._llm_connection)
+                        llm_conn = self._require_llm_connection()
+                        handler = await self._create_handler(llm_conn)
                         if handler:
                             self._created_handlers += 1
                             self._active_handlers += 1
@@ -230,7 +277,7 @@ class VectorDBHandlerPool:
                             logger.debug(
                                 "Created handler (active=%s, available=%s, max=%s, pending=%s)",
                                 self._active_handlers,
-                                self._pool.qsize(),
+                                self._require_pool().qsize(),
                                 self.max_connections,
                                 self._pending_waiters,
                             )
@@ -251,7 +298,9 @@ class VectorDBHandlerPool:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 10.0)
 
-    async def get_dedicated_handler(self, llm_connection: Callable):
+    async def get_dedicated_handler(
+        self, llm_connection: LLMConnection
+    ) -> Optional["VectorDBBase"]:
         """
         Get a dedicated vector_db_handler for write operations (not pooled) - async version.
 
@@ -262,12 +311,12 @@ class VectorDBHandlerPool:
             llm_connection: LLM connection for the handler
 
         Returns:
-            vector_db_handler instance (dedicated, not pooled)
+            vector_db_handler instance (dedicated, not pooled), or None if creation fails
         """
         return await self._create_handler(llm_connection)
 
     async def get_pool_stats(self) -> Dict[str, Any]:
-        """Get connection pool statistics (async version)."""
+        """Get connection pool statistics ."""
         if self._pool_lock is None:
             return {
                 "max_connections": self.max_connections,
@@ -310,8 +359,12 @@ class VectorDBHandlerPool:
                     cls._instance = cls(max_connections=max_connections)
         return cls._instance
 
-    async def close_all(self):
-        """Close all handlers in the pool (cleanup, async version)."""
+    async def close_all(self) -> None:
+        """
+        Close all handlers in the pool (cleanup, async version).
+
+        Gracefully closes all pooled handlers and resets pool statistics.
+        """
         logger.info("Closing all handlers in pool...")
         closed_count = 0
 

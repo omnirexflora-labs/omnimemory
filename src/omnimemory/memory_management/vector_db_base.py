@@ -1,15 +1,18 @@
+import base64
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
 from numbers import Number
+from typing import Any, Dict, List, Optional, Protocol
+
+import numpy as np
+
 from omnimemory.core.logger_utils import get_logger
 from omnimemory.core.utils import (
+    cache_embedding,
     chunk_text_by_tokens,
-    estimate_chunking_stats,
     count_tokens,
+    estimate_chunking_stats,
+    get_cached_embedding,
 )
-import base64
-import numpy as np
-from omnimemory.core.utils import get_cached_embedding, cache_embedding
 
 
 logger = get_logger(name="omnimemory.core.memory_management.vector_db_base")
@@ -25,19 +28,32 @@ def _get_edge_boost_multiplier() -> float:
     return 1.0 + (_EDGE_BOOST_PERCENT / 100.0)
 
 
+class SupportsEmbedding(Protocol):
+    """Protocol for dependencies that can create embeddings."""
+
+    async def embedding_call(self, text: str) -> Any: ...
+
+    def embedding_call_sync(self, text: str) -> Any: ...
+
+    embedding_config: Optional[Dict[str, Any]]
+
+
 class VectorDBBase(ABC):
     """Base class for vector database operations - CORE OPERATIONS ONLY."""
 
-    def __init__(self, **kwargs):
-        """Initialize vector database connection.
+    def __init__(self, **kwargs: Any) -> None:
+        """
+        Initialize vector database connection.
 
         Args:
             **kwargs: Additional parameters including llm_connection
         """
-        self.llm_connection = kwargs.pop("llm_connection", None)
+        self.llm_connection: Optional[SupportsEmbedding] = kwargs.pop(
+            "llm_connection", None
+        )
 
-        self._embed_model = None
-        self._vector_size = None
+        self._embed_model: Optional[str] = None
+        self._vector_size: Optional[int] = None
         self.enabled = False
 
         if not self.llm_connection:
@@ -46,20 +62,38 @@ class VectorDBBase(ABC):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+    def _validate_text_input(self, text: Any) -> None:
+        """
+        Validate text input for embedding operations.
+
+        Args:
+            text: Text to validate (can be any type, will be validated).
+
+        Raises:
+            ValueError: If text is not a string, is None, or is empty after stripping.
+        """
+        if not isinstance(text, str):
+            raise ValueError("Text input must be a non-empty string")
+
     async def embed_text(self, text: str) -> List[float]:
-        """Embed text using LLM connection via LiteLLM with smart chunking for long texts (async version).
+        """
+        Embed text using LLM connection via LiteLLM with smart chunking for long texts.
 
         Uses Redis caching to avoid redundant API calls for identical text.
 
-        For single strings (queries, memory notes), pass the string directly.
-        The embedding API accepts Union[str, List[str]] and always returns a list response.
+        Args:
+            text: Plain text string to embed.
+
+        Returns:
+            List of floats representing the embedding vector.
+
+        Raises:
+            RuntimeError: When embeddings are unavailable or invalid input detected.
         """
         if not self.llm_connection:
             raise RuntimeError("Vector database is disabled by configuration")
 
-        if not isinstance(text, str):
-            raise ValueError("Text input must be a non-empty string")
-
+        self._validate_text_input(text)
         text = text.strip()
         if not text:
             raise ValueError("Text input must be a non-empty string")
@@ -100,6 +134,8 @@ class VectorDBBase(ABC):
 
     def _embed_text_with_chunking(self, text: str) -> List[float]:
         """Embed long text by splitting into token-based chunks and processing."""
+        if self.llm_connection is None:
+            raise RuntimeError("LLM connection is required for embedding")
         try:
             model_name = "gpt-4"
             if (
@@ -182,7 +218,9 @@ class VectorDBBase(ABC):
             raise RuntimeError(f"Failed to embed text with token-based chunking: {e}")
 
     async def _embed_text_with_chunking_async(self, text: str) -> List[float]:
-        """Embed long text by splitting into token-based chunks and processing (async version)."""
+        """Embed long text by splitting into token-based chunks and processing ."""
+        if self.llm_connection is None:
+            raise RuntimeError("LLM connection is required for embedding")
         try:
             model_name = "gpt-4"
             if (
@@ -387,7 +425,7 @@ class VectorDBBase(ABC):
         embedding: List[float],
         metadata: Dict,
     ) -> bool:
-        """Add document with embedding to collection (async version).
+        """Add document with embedding to collection .
 
         Args:
             collection_name: Name of the collection
@@ -408,9 +446,9 @@ class VectorDBBase(ABC):
         query: str,
         n_results: int,
         similarity_threshold: float,
-        filter_conditions: Dict[str, Any] = None,
+        filter_conditions: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Query collection with flexible filtering (async version).
+        """Query collection with flexible filtering .
 
         Args:
             collection_name: Name of the collection to query
@@ -430,7 +468,7 @@ class VectorDBBase(ABC):
         collection_name: str,
         embedding: List[float],
         n_results: int,
-        filter_conditions: Dict[str, Any] = None,
+        filter_conditions: Optional[Dict[str, Any]] = None,
         similarity_threshold: float = 0.0,
     ) -> Dict[str, Any]:
         """

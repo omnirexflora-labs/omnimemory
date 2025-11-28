@@ -30,12 +30,62 @@ services:
           cpus: '0.25'
     networks:
       - omnimemory-local
+    profiles:
+      - default
+      - qdrant
 
-  api:
+  chromadb:
+    image: chromadb/chroma
+    container_name: omnimemory-chromadb-local
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_AUTH_TYPE=token
+      - CHROMA_SERVER_AUTH_TOKEN=${CHROMA_AUTH_TOKEN:-local-dev-token}
+      - ANONYMIZED_TELEMETRY=false
+    volumes:
+      - chromadb_data:/chroma/.chroma/index
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/healthcheck"] 
+    #   interval: 20s
+    #   timeout: 10s
+    #   retries: 10
+    #   start_period: 60s
+
+    networks:
+      - omnimemory-local
+    profiles:
+      - chromadb
+
+  pgvector:
+    image: pgvector/pgvector:pg16-bookworm
+    container_name: omnimemory-pgvector-local
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=omnimemory
+      - POSTGRES_USER=omnimemory
+      - POSTGRES_PASSWORD=omnimemory
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnimemory -d omnimemory"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - omnimemory-local
+    profiles:
+      - pgvector
+
+  api-qdrant:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: omnimemory-api-local
+    container_name: omnimemory-api-qdrant
     ports:
       - "8001:8001"
     env_file:
@@ -69,7 +119,7 @@ services:
       
       
       # OmniMemory Hyperparameters (tunable via .env)
-      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-30}
+      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-10}
       - OMNIMEMORY_RECALL_THRESHOLD=${OMNIMEMORY_RECALL_THRESHOLD:-0.3}
       - OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=${OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD:-0.4}
       - OMNIMEMORY_DEFAULT_N_RESULTS=${OMNIMEMORY_DEFAULT_N_RESULTS:-10}
@@ -93,6 +143,124 @@ services:
       start_period: 40s
     networks:
       - omnimemory-local
+    profiles:
+      - default
+      - qdrant
+
+  api-chromadb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnimemory-api-chromadb
+    ports:
+      - "8002:8001"
+    env_file:
+      - .env
+    environment:
+      - OMNI_MEMORY_PROVIDER=chromadb-remote
+      - CHROMA_CLIENT_TYPE=remote
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - CHROMA_AUTH_TOKEN=${CHROMA_AUTH_TOKEN:-local-dev-token}
+
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.4}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-3000}
+      - LLM_TOP_P=${LLM_TOP_P:-0.9}
+
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - EMBEDDING_ENCODING_FORMAT=${EMBEDDING_ENCODING_FORMAT:-base64}
+      - EMBEDDING_TIMEOUT=${EMBEDDING_TIMEOUT:-600}
+
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-./logs}
+
+      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-10}
+      - OMNIMEMORY_RECALL_THRESHOLD=${OMNIMEMORY_RECALL_THRESHOLD:-0.3}
+      - OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=${OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD:-0.4}
+      - OMNIMEMORY_DEFAULT_N_RESULTS=${OMNIMEMORY_DEFAULT_N_RESULTS:-10}
+      - OMNIMEMORY_LINK_THRESHOLD=${OMNIMEMORY_LINK_THRESHOLD:-0.8}
+      - OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS=${OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS:-10}
+
+      - OMNIMEMORY_ENABLE_METRICS_SERVER=${OMNIMEMORY_ENABLE_METRICS_SERVER:-false}
+      - OMNIMEMORY_METRICS_PORT=${OMNIMEMORY_METRICS_PORT:-9001}
+    volumes:
+      - ./logs:/app/logs
+    # depends_on:
+    #   chromadb:
+    #     condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - omnimemory-local
+    profiles:
+      - chromadb
+
+  api-pgvector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnimemory-api-pgvector
+    ports:
+      - "8003:8001"
+    env_file:
+      - .env
+    environment:
+      - OMNI_MEMORY_PROVIDER=postgresql
+      - POSTGRES_URI=postgresql://omnimemory:omnimemory@pgvector:5432/omnimemory
+
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.4}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-3000}
+      - LLM_TOP_P=${LLM_TOP_P:-0.9}
+
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - EMBEDDING_ENCODING_FORMAT=${EMBEDDING_ENCODING_FORMAT:-base64}
+      - EMBEDDING_TIMEOUT=${EMBEDDING_TIMEOUT:-600}
+
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-./logs}
+
+      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-10}
+      - OMNIMEMORY_RECALL_THRESHOLD=${OMNIMEMORY_RECALL_THRESHOLD:-0.3}
+      - OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=${OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD:-0.4}
+      - OMNIMEMORY_DEFAULT_N_RESULTS=${OMNIMEMORY_DEFAULT_N_RESULTS:-10}
+      - OMNIMEMORY_LINK_THRESHOLD=${OMNIMEMORY_LINK_THRESHOLD:-0.8}
+      - OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS=${OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS:-10}
+
+      - OMNIMEMORY_ENABLE_METRICS_SERVER=${OMNIMEMORY_ENABLE_METRICS_SERVER:-false}
+      - OMNIMEMORY_METRICS_PORT=${OMNIMEMORY_METRICS_PORT:-9001}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - omnimemory-local
+    profiles:
+      - pgvector
 
   # Optional: Prometheus for metrics collection
   prometheus:
@@ -100,7 +268,7 @@ services:
     container_name: omnimemory-prometheus-local
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "9091:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -109,6 +277,8 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - omnimemory-local
     profiles:
@@ -136,8 +306,59 @@ services:
     profiles:
       - monitoring  # Only start with --profile monitoring
 
+  # API Server (MongoDB Profile)
+  # Usage: MONGODB_URI=mongodb+srv://... docker compose --profile mongodb up
+  api-mongodb:
+    build: .
+    container_name: omnimemory-api-mongodb
+    ports:
+      - "8004:8001"
+    env_file:
+      - .env
+    environment:
+      - OMNI_MEMORY_PROVIDER=mongodb-remote
+      - MONGODB_URI=${MONGODB_URI}  
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-omnimemory}
+
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.4}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-3000}
+      - LLM_TOP_P=${LLM_TOP_P:-0.9}
+
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - EMBEDDING_ENCODING_FORMAT=${EMBEDDING_ENCODING_FORMAT:-base64}
+      - EMBEDDING_TIMEOUT=${EMBEDDING_TIMEOUT:-600}
+
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-./logs}
+
+      - OMNIMEMORY_DEFAULT_MAX_MESSAGES=${OMNIMEMORY_DEFAULT_MAX_MESSAGES:-10}
+      - OMNIMEMORY_RECALL_THRESHOLD=${OMNIMEMORY_RECALL_THRESHOLD:-0.3}
+      - OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD=${OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD:-0.4}
+      - OMNIMEMORY_DEFAULT_N_RESULTS=${OMNIMEMORY_DEFAULT_N_RESULTS:-10}
+      - OMNIMEMORY_LINK_THRESHOLD=${OMNIMEMORY_LINK_THRESHOLD:-0.8}
+      - OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS=${OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS:-10}
+
+      - OMNIMEMORY_ENABLE_METRICS_SERVER=${OMNIMEMORY_ENABLE_METRICS_SERVER:-false}
+      - OMNIMEMORY_METRICS_PORT=${OMNIMEMORY_METRICS_PORT:-9001}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - omnimemory-local
+    profiles:
+      - mongodb
+
 volumes:
   qdrant_storage:
+    driver: local
+  chromadb_data:
+    driver: local
+  pgvector_data:
     driver: local
   prometheus-data:
     driver: local

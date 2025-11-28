@@ -5,7 +5,7 @@ Comprehensive unit tests for OmniMemory metrics collector.
 import pytest
 import time
 import threading
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from omnimemory.core.metrics import (
     MetricsCollector,
     get_metrics_collector,
@@ -689,7 +689,7 @@ class TestMetricsCollectorStartServer:
 
         collector = MetricsCollector(enable=True)
 
-        with patch("omnimemory.core.metrics.start_http_server") as mock_start:
+        with patch("omnimemory.core.metrics.start_http_server"):
             with patch("socket.socket") as mock_socket:
                 mock_sock = Mock()
                 mock_sock.connect_ex.return_value = 1
@@ -705,7 +705,7 @@ class TestMetricsCollectorStartServer:
 
         collector = MetricsCollector(enable=True)
 
-        with patch("omnimemory.core.metrics.start_http_server") as mock_start:
+        with patch("omnimemory.core.metrics.start_http_server"):
             with patch("socket.socket") as mock_socket:
                 mock_sock = Mock()
                 mock_sock.connect_ex.return_value = 1

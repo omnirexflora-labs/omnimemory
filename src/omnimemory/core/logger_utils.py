@@ -4,9 +4,8 @@ Comprehensive logging utility for OmniMemory.
 
 import logging
 import sys
-import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from decouple import config
@@ -18,7 +17,7 @@ try:
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
-    Console = None
+    Console = None  # type: ignore[assignment, misc]
 
 
 class OmniMemoryLogger:
@@ -89,10 +88,10 @@ class OmniMemoryLogger:
         if enable_file:
             self._setup_file_handler(max_bytes, backup_count)
 
-    def _setup_console_handler(self, use_rich: bool):
+    def _setup_console_handler(self, use_rich: bool) -> None:
         """Setup console handler with optional Rich formatting."""
         if use_rich and RICH_AVAILABLE:
-            console_handler = RichHandler(
+            console_handler: logging.Handler = RichHandler(
                 console=Console(stderr=True),
                 show_time=True,
                 show_path=True,
@@ -112,45 +111,72 @@ class OmniMemoryLogger:
 
         self.logger.addHandler(console_handler)
 
-    def _setup_file_handler(self, max_bytes: int, backup_count: int):
-        """Setup rotating file handler."""
-        file_handler = RotatingFileHandler(
-            self.log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(logging.DEBUG)
+    def _setup_file_handler(self, max_bytes: int, backup_count: int) -> None:
+        """Setup rotating file handler.
 
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        file_handler.setFormatter(formatter)
+        Handles permission errors gracefully by falling back to console-only logging.
+        This is especially important during test runs where log directories may not be writable.
+        """
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self.logger.addHandler(file_handler)
+            test_file = self.log_dir / ".write_test"
+            try:
+                test_file.touch()
+                test_file.unlink()
+            except (PermissionError, OSError):
+                if self.logger.handlers:
+                    self.logger.warning(
+                        f"Cannot write to log directory {self.log_dir}. "
+                        "File logging disabled. Continuing with console logging only."
+                    )
+                return
 
-    def debug(self, message: str, *args, **kwargs):
+            file_handler = RotatingFileHandler(
+                self.log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(logging.DEBUG)
+
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            file_handler.setFormatter(formatter)
+
+            self.logger.addHandler(file_handler)
+        except (PermissionError, OSError) as e:
+            if self.logger.handlers:
+                self.logger.warning(
+                    f"Cannot create log file {self.log_file}: {e}. "
+                    "File logging disabled. Continuing with console logging only."
+                )
+
+    def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
         """Log debug message."""
         self.logger.debug(message, *args, **kwargs)
 
-    def info(self, message: str, *args, **kwargs):
+    def info(self, message: str, *args: Any, **kwargs: Any) -> None:
         """Log info message."""
         self.logger.info(message, *args, **kwargs)
 
-    def warning(self, message: str, *args, **kwargs):
+    def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
         """Log warning message."""
         self.logger.warning(message, *args, **kwargs)
 
-    def error(self, message: str, *args, **kwargs):
+    def error(self, message: str, *args: Any, **kwargs: Any) -> None:
         """Log error message."""
         self.logger.error(message, *args, **kwargs)
 
-    def critical(self, message: str, *args, **kwargs):
+    def critical(self, message: str, *args: Any, **kwargs: Any) -> None:
         """Log critical message."""
         self.logger.critical(message, *args, **kwargs)
 
-    def exception(self, message: str, *args, exc_info=True, **kwargs):
+    def exception(
+        self, message: str, *args: Any, exc_info: bool = True, **kwargs: Any
+    ) -> None:
         """Log exception with traceback."""
         self.logger.exception(message, *args, exc_info=exc_info, **kwargs)
 

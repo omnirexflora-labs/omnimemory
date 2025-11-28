@@ -5,8 +5,6 @@ Pytest configuration and shared fixtures for OmniMemory tests.
 import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, MagicMock
-from typing import List, Dict, Any, Optional
-import os
 from omnimemory.core.llm import LLMConnection
 
 

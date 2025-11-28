@@ -110,8 +110,6 @@ def test_normalize_prepared_memory_note_missing_text(monkeypatch, mock_llm_conne
 
 
 def test_depth_to_complexity(monkeypatch, mock_llm_connection):
-    manager = _make_manager(monkeypatch, mock_llm_connection)
-
     assert MemoryManager._depth_to_complexity("low") == 1
     assert MemoryManager._depth_to_complexity("medium") == 2
     assert MemoryManager._depth_to_complexity("high") == 3

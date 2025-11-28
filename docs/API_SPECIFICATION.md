@@ -1,13 +1,11 @@
 # OmniMemory API Specification
 
-Complete API specification for OmniMemory REST API.
-
-**Architecture:** Self-Evolving Composite Memory Synthesis Architecture (SECMSA)
+Complete REST API contract for OmniMemory. This document focuses purely on endpoints, payloads, and responses (see `README.md` for setup and `docs/ARCHITECTURE.md` for system design).
 
 ## Base URL
 
 ```
-http://localhost:8000/api/v1
+http://localhost:8001/api/v1
 ```
 
 ## Authentication
@@ -17,6 +15,8 @@ Currently, the API does not require authentication. For production deployments, 
 ## Content Type
 
 All requests and responses use `application/json`.
+
+For deployment profiles and vector database setup instructions, see the Quick Start section of `README.md`.
 
 ## Error Responses
 
@@ -34,6 +34,8 @@ HTTP Status Codes:
 - `500 Internal Server Error` - Server error
 - `503 Service Unavailable` - SDK not initialized
 
+> **Identifier Length:** All `app_id`, `user_id`, and `session_id` values must be at least 10 characters. Requests that provide shorter identifiers will be rejected with `400 Bad Request`.
+
 ---
 
 ## Memory Operations
@@ -47,14 +49,13 @@ Create a new memory from user messages asynchronously.
 **Request Body:**
 ```json
 {
-  "app_id": "string (required, min 1 char)",
-  "user_id": "string (required, min 1 char)",
-  "session_id": "string (optional)",
+  "app_id": "string (required, min 10 chars)",
+  "user_id": "string (required, min 10 chars)",
+  "session_id": "string (optional, min 10 chars if provided)",
   "messages": [
     {
       "role": "string (required)",
       "content": "string (required)",
-      "timestamp": "string (required)"
     }
   ]
 }
@@ -80,7 +81,7 @@ Create a new memory from user messages asynchronously.
 
 **Example Request:**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/memories" \
+curl -X POST "http://localhost:8001/api/v1/memories" \
   -H "Content-Type: application/json" \
   -d '{
     "app_id": "my-app-id",
@@ -90,20 +91,77 @@ curl -X POST "http://localhost:8000/api/v1/memories" \
       {
         "role": "user",
         "content": "Hello, how are you?",
-        "timestamp": "2024-01-01T00:00:00Z"
       },
       {
         "role": "assistant",
         "content": "I am doing well, thank you!",
-        "timestamp": "2024-01-01T00:00:05Z"
       }
     ]
   }'
 ```
 
 **Error Responses:**
-- `400 Bad Request` - If messages count is < 1 or > 30, or validation fails
+- `400 Bad Request` - If messages count differs from `OMNIMEMORY_DEFAULT_MAX_MESSAGES` (default: 10) or validation fails
 - `500 Internal Server Error` - If memory creation fails
+
+---
+
+### Stream Messages (Memory Batcher)
+
+Append role/content messages and let the server-side batcher automatically call `add_memory()` once your configured `OMNIMEMORY_DEFAULT_MAX_MESSAGES` window is reached.
+
+**Endpoint:** `POST /api/v1/memory-batcher/messages`
+
+**Request Body:**
+```json
+{
+  "app_id": "string (required, min 10 chars)",
+  "user_id": "string (required, min 10 chars)",
+  "session_id": "string (optional, min 10 chars if provided)",
+  "messages": [
+    {
+      "role": "string (required, user|assistant|system)",
+      "content": "string (required)"
+    }
+  ]
+}
+```
+
+The batcher keeps buffering per `(app_id, user_id, session_id)` and automatically Flushes via the full dual-agent pipeline when the batch size is met. Partial batches are left pending—no manual flush endpoint is exposed.
+
+**Response:** `200 OK`
+```json
+{
+  "app_id": "my-app-id",
+  "user_id": "user-123",
+  "session_id": "session-456",
+  "pending_messages": 4,
+  "batch_size": 10,
+  "status": "pending",          // or "flushed" once the window is reached
+  "last_delivery": "add_memory" // null when nothing has been flushed yet
+}
+```
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8001/api/v1/memory-batcher/messages" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_id": "my-app-id",
+    "user_id": "user-123",
+    "messages": [
+      {"role": "user", "content": "Booked a demo for Thursday"},
+      {"role": "assistant", "content": "Confirmed calendar invite"}
+    ]
+  }'
+```
+
+**Notes:**
+- The server maintains in-memory buffers per `(app_id, user_id, session_id)`.
+- Each request appends messages to the corresponding buffer.
+- When the number of buffered messages reaches `OMNIMEMORY_DEFAULT_MAX_MESSAGES` (default: 10), the server automatically calls `add_memory()` with the full batch.
+- The response indicates the current `pending_messages` count and the `batch_size`.
+- Once the batch window is met, the response will report `status: "flushed"` and include the last delivery metadata for troubleshooting.
 
 ---
 
@@ -114,10 +172,10 @@ Query memories with intelligent multi-dimensional ranking.
 **Endpoint:** `GET /api/v1/memories/query`
 
 **Query Parameters:**
-- `app_id` (required, string) - Application ID
-- `query` (required, string, min 1 char) - Natural language query
-- `user_id` (optional, string) - User ID filter
-- `session_id` (optional, string) - Session ID filter
+- `app_id` (required, string, min 10 chars) - Application ID
+- `query` (required, string, min 10 chars) - Natural language query
+- `user_id` (optional, string, min 10 chars if provided) - User ID filter
+- `session_id` (optional, string, min 10 chars if provided) - Session ID filter
 - `n_results` (optional, int, 1-100) - Maximum number of results
 - `similarity_threshold` (optional, float, 0.0-1.0) - Similarity threshold
 
@@ -141,17 +199,10 @@ Query memories with intelligent multi-dimensional ranking.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/api/v1/memories/query?app_id=my-app-id&query=hello&user_id=user-123&n_results=5"
+curl "http://localhost:8001/api/v1/memories/query?app_id=my-app-id&query=hello&user_id=user-123&n_results=5"
 ```
-
-**Scoring:**
-The query uses composite scoring combining:
-- **Relevance** (semantic similarity)
-- **Recency** (time-based freshness)
-- **Importance** (content significance)
-
-Formula: `composite = relevance × (1 + recency_boost + importance_boost)`
-
+**Error Responses:**
+- `400 Bad Request` - If required parameters are missing or validation fails
 ---
 
 ### Get Memory
@@ -177,7 +228,7 @@ Get a single memory by its ID.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/api/v1/memories/memory-123?app_id=my-app-id"
+curl "http://localhost:8001/api/v1/memories/memory-123?app_id=my-app-id"
 ```
 
 **Error Responses:**
@@ -208,7 +259,7 @@ Delete a memory from the collection.
 
 **Example Request:**
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/memories/memory-123?app_id=my-app-id"
+curl -X DELETE "http://localhost:8001/api/v1/memories/memory-123?app_id=my-app-id"
 ```
 
 **Error Responses:**
@@ -250,22 +301,8 @@ Traverse the memory evolution chain using singly linked list algorithm. Starting
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/api/v1/memories/memory-123/evolution?app_id=my-app-id"
+curl "http://localhost:8001/api/v1/memories/memory-123/evolution?app_id=my-app-id"
 ```
-
-**Algorithm:**
-1. Start from the given `memory_id`
-2. Fetch the memory and add it to the result list
-3. Extract `next_id` from memory metadata
-4. If `next_id` is not None, repeat from step 2 with `next_id`
-5. Continue until `next_id` is None (end of chain)
-6. Return all memories in evolution order (oldest to newest)
-
-**Features:**
-- Forward traversal (oldest → newest)
-- Cycle detection to prevent infinite loops
-- Handles missing memories gracefully
-- Returns empty list if starting memory not found
 
 **Error Responses:**
 - `500 Internal Server Error` - If traversal fails
@@ -283,9 +320,9 @@ Create a memory directly from agent messages. This endpoint uses a fast, single-
 **Request Body:**
 ```json
 {
-  "app_id": "string (required, min 1 char)",
-  "user_id": "string (required, min 1 char)",
-  "session_id": "string (optional)",
+  "app_id": "string (required, min 10 chars)",
+  "user_id": "string (required, min 10 chars)",
+  "session_id": "string (optional, min 10 chars if provided)",
   "messages": "string or array of message objects"
 }
 ```
@@ -308,7 +345,7 @@ Create a memory directly from agent messages. This endpoint uses a fast, single-
 
 **Example Request (String):**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/agent/memories" \
+curl -X POST "http://localhost:8001/api/v1/agent/memories" \
   -H "Content-Type: application/json" \
   -d '{
     "app_id": "my-app-id",
@@ -320,20 +357,20 @@ curl -X POST "http://localhost:8000/api/v1/agent/memories" \
 
 **Example Request (Array):**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/agent/memories" \
+curl -X POST "http://localhost:8001/api/v1/agent/memories" \
   -H "Content-Type: application/json" \
   -d '{
     "app_id": "my-app-id",
     "user_id": "user-123",
     "messages": [
-      {"role": "agent", "content": "User asked about pricing", "timestamp": "2024-01-01T00:00:00Z"},
-      {"role": "user", "content": "What are your plans?", "timestamp": "2024-01-01T00:00:05Z"}
+      {"role": "agent", "content": "User asked about pricing"},
+      {"role": "user", "content": "What are your plans?"}
     ]
   }'
 ```
 
 **Features:**
-- **Fast Processing:** Uses optimized single-agent summary generation (<10 seconds)
+- **Fast Processing:** Uses optimized single-agent summary generation (<5 seconds)
 - **Flexible Input:** Accepts both string and structured message arrays
 - **Simple Storage:** Direct storage without conflict resolution or metadata extraction
 - **Async Processing:** Returns immediately with task_id for background processing
@@ -349,9 +386,9 @@ Generate a comprehensive conversation summary using a single-agent pipeline. Per
 **Request Body:**
 ```json
 {
-  "app_id": "string (required)",
-  "user_id": "string (required)",
-  "session_id": "string (optional)",
+  "app_id": "string (required, min 10 chars)",
+  "user_id": "string (required, min 10 chars)",
+  "session_id": "string (optional, min 10 chars if provided)",
   "messages": "string or array of message objects",
   "callback_url": "string (optional)",
   "callback_headers": {
@@ -363,7 +400,7 @@ Generate a comprehensive conversation summary using a single-agent pipeline. Per
 **Response Modes:**
 
 **Synchronous (`200 OK`)** - When no callback URL is provided:
-- Returns summary immediately (<10 seconds)
+- Returns summary immediately (<5 seconds)
 - Fast, simple text summary optimized for quick retrieval
 - Perfect for real-time applications
 
@@ -375,7 +412,7 @@ Generate a comprehensive conversation summary using a single-agent pipeline. Per
 
 **Example Request (Sync):**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/agent/summaries" \
+curl -X POST "http://localhost:8001/api/v1/agent/summaries" \
   -H "Content-Type: application/json" \
   -d '{
     "app_id": "my-app-id",
@@ -386,7 +423,7 @@ curl -X POST "http://localhost:8000/api/v1/agent/summaries" \
 
 **Example Request (Async with Callback):**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/agent/summaries" \
+curl -X POST "http://localhost:8001/api/v1/agent/summaries" \
   -H "Content-Type: application/json" \
   -H "X-Callback-URL: https://your-webhook.com/callback" \
   -d '{
@@ -423,7 +460,7 @@ Check API health and SDK initialization status.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/health"
+curl "http://localhost:8001/health"
 ```
 
 ---
@@ -438,7 +475,7 @@ Get basic API information.
 ```json
 {
   "name": "OmniMemory API",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "REST API for OmniMemory - Advanced Memory Management System",
   "endpoints": {
     "docs": "/docs",
@@ -450,7 +487,7 @@ Get basic API information.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/"
+curl "http://localhost:8001/"
 ```
 
 ---
@@ -464,7 +501,7 @@ Inspect the vector database connection pool state for observability/debugging.
 **Response:** `200 OK`
 ```json
 {
-  "max_connections": 30,
+  "max_connections": 10,
   "created_handlers": 12,
   "active_handlers": 4,
   "available_handlers": 8,
@@ -474,69 +511,7 @@ Inspect the vector database connection pool state for observability/debugging.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8000/api/v1/system/pool-stats"
-```
-
----
-
-## Agent Operations
-
-### Summarize Conversation
-
-Generate a conversation summary with the single-agent pipeline. Supports synchronous replies or asynchronous webhook delivery.
-
-**Endpoint:** `POST /api/v1/agent/summaries`
-
-**Request Body:**
-```json
-{
-  "app_id": "string",
-  "user_id": "string",
-  "session_id": "string or null",
-  "messages": [
-    {
-      "role": "user",
-      "content": "Need help with rate limits",
-      "timestamp": "2025-01-01T12:00:00Z"
-    }
-  ],
-  "callback_url": "https://example.com/webhook",
-  "callback_headers": {
-    "Authorization": "Bearer token"
-  }
-}
-```
-- `messages` may also be provided as a single raw string instead of an array.
-- When `callback_url` is present the API returns `202 Accepted` immediately and posts the summary to the webhook when ready.
-
-**Synchronous Response (`200 OK`):**
-```json
-{
-  "app_id": "my-app",
-  "user_id": "user-123",
-  "session_id": "session-456",
-  "summary": "Concise narrative...",
-  "key_points": "Important highlights",
-  "tags": ["api", "support"],
-  "keywords": ["rate limits", "throttling"],
-  "semantic_queries": ["api rate limits"],
-  "metadata": {
-    "conversation_complexity": 2
-  },
-  "generated_at": "2025-01-01T12:34:56.789Z"
-}
-```
-
-**Async Response (`202 Accepted`):**
-```json
-{
-  "task_id": "uuid",
-  "status": "accepted",
-  "message": "Conversation summary scheduled for callback delivery",
-  "app_id": "my-app",
-  "user_id": "user-123",
-  "session_id": "session-456"
-}
+curl "http://localhost:8001/api/v1/system/pool-stats"
 ```
 
 ---
@@ -545,9 +520,9 @@ Generate a conversation summary with the single-agent pipeline. Supports synchro
 
 The API provides interactive documentation:
 
-- **Swagger UI:** http://localhost:8000/docs
-- **ReDoc:** http://localhost:8000/redoc
-- **OpenAPI JSON:** http://localhost:8000/openapi.json
+- **Swagger UI:** http://localhost:8001/docs
+- **ReDoc:** http://localhost:8001/redoc
+- **OpenAPI JSON:** http://localhost:8001/openapi.json
 
 ---
 
@@ -569,51 +544,4 @@ app.add_middleware(
 )
 ```
 
----
-
-## SDK Methods Reference
-
-The API endpoints map to the following SDK methods:
-
-### Memory Operations
-
-| API Endpoint | SDK Method | Description |
-|-------------|------------|-------------|
-| `POST /api/v1/memories` | `add_memory()` | Create memory from user messages (full pipeline) |
-| `GET /api/v1/memories/query` | `query_memory()` | Query memories with intelligent ranking |
-| `GET /api/v1/memories/{id}` | `get_memory()` | Get a single memory by ID |
-| `DELETE /api/v1/memories/{id}` | `delete_memory()` | Delete a memory from collection |
-
-### Agent Operations
-
-| API Endpoint | SDK Method | Description |
-|-------------|------------|-------------|
-| `POST /api/v1/agent/memories` | `add_agent_memory()` | Create memory from agent message (fast path) |
-| `POST /api/v1/agent/summaries` | `summarize_conversation()` | Generate conversation summary (sync or async) |
-
----
-
-## Architecture Notes
-
-**Self-Evolving Composite Memory Synthesis Architecture (SECMSA)**
-
-1. **Dual-Agent Construction:** Memories are created through parallel execution of Episodic and Summarizer agents, then synthesized into canonical memory notes.
-
-2. **Composite Scoring:** Multi-dimensional ranking using `composite = relevance × (1 + recency_boost + importance_boost)` ensures relevance-first retrieval.
-
-3. **Self-Evolution:** AI-powered conflict resolution agents autonomously execute UPDATE/DELETE/SKIP/CREATE operations to maintain memory coherence.
-
-4. **Status-Driven Lineage:** Conflict resolution keeps memories simple by updating `status`, `status_reason`, and `updated_at` (e.g., consolidated, contradicted), avoiding complex version metadata.
-
-5. **Asynchronous Processing:** Memory creation endpoints return immediately with a `task_id`, and the SDK completes creation/embedding/storage via internal `asyncio` background tasks.
-
-6. **Message Validation:** Messages are validated to ensure they contain between 1 and 30 messages (configurable via `DEFAULT_MAX_MESSAGES`).
-
-7. **Connection Pooling:** The API uses connection pooling for efficient vector database access. The SDK is initialized once at startup and reused for all requests.
-
-8. **Error Handling:** All endpoints include comprehensive error handling and logging.
-
-9. **Agent Operations:** Fast, single-agent workflows for agent-driven memory creation and conversation summarization. Optimized for speed (<10 seconds) with flexible input formats (string or structured arrays).
-
-10. **Smart Webhook Delivery:** Conversation summaries support webhook callbacks with automatic retry logic (3 attempts, exponential backoff) and intelligent error handling (skips retries for permanent errors).
 

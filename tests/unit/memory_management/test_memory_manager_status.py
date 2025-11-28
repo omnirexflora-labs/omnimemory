@@ -1,7 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, Mock
 
-from omnimemory.core.results import MemoryOperationResult
 from omnimemory.memory_management.memory_manager import MemoryManager
 
 

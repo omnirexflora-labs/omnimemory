@@ -3,7 +3,7 @@ Comprehensive unit tests for OmniMemory core schemas.
 """
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime
 from pydantic import ValidationError
 from omnimemory.core.schemas import (
     Message,
@@ -29,17 +29,10 @@ class TestMessage:
     """Test cases for Message schema."""
 
     def test_create_message_with_all_fields(self):
-        """Test create message with role, content, timestamp."""
-        msg = Message(role="user", content="Hello", timestamp="2024-01-01T00:00:00Z")
+        """Test create message with role and content."""
+        msg = Message(role="user", content="Hello")
         assert msg.role == "user"
         assert msg.content == "Hello"
-        assert msg.timestamp == "2024-01-01T00:00:00Z"
-
-    def test_create_message_auto_generate_timestamp(self):
-        """Test auto-generate timestamp when not provided."""
-        msg = Message(role="user", content="Hello")
-        assert msg.timestamp is not None
-        assert isinstance(msg.timestamp, str)
 
     def test_create_message_validate_required_fields(self):
         """Test validate required fields."""
@@ -49,13 +42,15 @@ class TestMessage:
         with pytest.raises(ValidationError):
             Message(content="Hello")
 
-    def test_create_message_handle_optional_timestamp(self):
-        """Test handle optional timestamp."""
-        msg1 = Message(role="user", content="Hello", timestamp="2024-01-01T00:00:00Z")
-        msg2 = Message(role="user", content="Hello")
+    def test_create_message_with_valid_roles(self):
+        """Test create message with valid roles (user, assistant, system)."""
+        msg1 = Message(role="user", content="Hello")
+        msg2 = Message(role="assistant", content="Hi")
+        msg3 = Message(role="system", content="System message")
 
-        assert msg1.timestamp == "2024-01-01T00:00:00Z"
-        assert msg2.timestamp is not None
+        assert msg1.role == "user"
+        assert msg2.role == "assistant"
+        assert msg3.role == "system"
 
 
 class TestUserMessages:
@@ -181,7 +176,6 @@ class TestUserMessages:
             semantic_queries=["query1"],
         )
         assert response.generated_at is not None
-        from datetime import datetime
 
         assert isinstance(response.generated_at, datetime)
 
