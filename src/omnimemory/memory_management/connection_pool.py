@@ -125,7 +125,7 @@ class VectorDBHandlerPool:
         if self._llm_connection is None:
             self._llm_connection = llm_connection
 
-        initial_size = min(2, self.max_connections)
+        initial_size = max(1, self.max_connections // 2)
         for _ in range(initial_size):
             handler = await self._create_handler(self._llm_connection)
             if handler:

@@ -215,7 +215,7 @@ python examples/complete_api_example.py
 
 **Fully Asynchronous**: O(1) latency from user perspective. Memory synthesis happens in **fire-and-forget** background tasks. No polling needed - check logs if debugging required.
 
-**Connection Pooling**: Configurable pool size (default 10) for high concurrency workloads.
+**Connection Pooling**: Intelligent pool management with configurable size (default 10). Initializes with 50% of max connections for optimal startup performance, then scales on-demand to handle concurrent workloads.
 
 **Metrics & Observability**: Prometheus-compatible metrics at `http://localhost:9001/metrics` (enable with `OMNIMEMORY_ENABLE_METRICS_SERVER=true`).
 
@@ -407,6 +407,25 @@ response = await sdk.add_agent_memory(AgentMemoryRequest(
 - `similarity_threshold: float` (optional, default from env) - Min similarity (0.0-1.0). **Overrides** `OMNIMEMORY_RECALL_THRESHOLD` env var.
 
 **Returns**: List of memory dictionaries
+
+**Query Best Practices**:
+
+> **💡 TIP**: Specific queries yield better results than generic ones.
+
+| Query Type | Example | Expected Score | Quality |
+|-----------|---------|----------------|---------|
+| ❌ **Too Generic** | "what is machine learning" | 0.20-0.30 | Poor - too broad |
+| ⚠️ **Somewhat Generic** | "neural networks" | 0.30-0.40 | Fair - lacks context |
+| ✅ **Specific** | "how to implement neural networks with backpropagation" | 0.40-0.55 | Good - targeted |
+| ✅ **Very Specific** | "troubleshooting slow loss decrease in neural network training" | 0.50-0.65 | Excellent - precise |
+
+**Understanding Similarity Scores**:
+- **0.20-0.35**: Weakly related content (consider lowering threshold if needed)
+- **0.35-0.55**: Semantically related (typical for good matches)
+- **0.55-0.75**: Strong match (rare, usually requires similar phrasing)
+- **0.75-1.00**: Near-identical content (very rare in practice)
+
+**Note**: Composite scoring boosts relevant memories with recency/importance, so a 0.45 similarity can become 0.60+ composite score.
 
 ```python
 results = await sdk.query_memory(
@@ -647,11 +666,11 @@ Tune these hyperparameters in your `.env` file to optimize for your specific use
 
 | Parameter | Default | Description | Tuning Guide |
 | :--- | :--- | :--- | :--- |
-| `OMNIMEMORY_RECALL_THRESHOLD` | `0.3` | Minimum cosine similarity for initial retrieval from Vector DB. | Lower to `0.2` for broader recall (more noise); raise to `0.5` for stricter relevance. |
-| `OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD` | `0.5` | Minimum *final* score (Relevance × Boosts) to return a memory. | Raise to `0.6+` if you only want high-confidence memories. Lowering it may return less relevant but "important" or "recent" memories. |
+| `OMNIMEMORY_RECALL_THRESHOLD` | `0.3` | Minimum cosine similarity for initial retrieval from Vector DB. | Lower to `0.2-0.25` for broader recall. Note: Typical good matches score 0.35-0.55, not 0.7+. Specific queries perform better than generic ones. |
+| `OMNIMEMORY_COMPOSITE_SCORE_THRESHOLD` | `0.5` | Minimum *final* score (Relevance × Boosts) to return a memory. | Lower to `0.35-0.4` for more results. Composite scoring boosts base similarity with recency/importance, so a 0.45 similarity can become 0.60+ composite score. |
 | `OMNIMEMORY_LINK_THRESHOLD` | `0.7` | Similarity required to "link" memories for conflict resolution. | Lower to `0.6` to trigger evolution/updates more often. Raise to `0.8` to reduce "noise" and only link very similar topics. |
 | `OMNIMEMORY_DEFAULT_MAX_MESSAGES` | `10` | Number of messages required for `add_memory`. | Match this to your LLM's context window preference. Too low = poor synthesis; Too high = context bloat. |
-| `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS` | `10` | Max concurrent DB connections. | Reduce to `3-5` for low-resource environments (e.g., local dev). Increase for high-throughput production. |
+| `OMNIMEMORY_VECTOR_DB_MAX_CONNECTIONS` | `10` | Max concurrent DB connections. Pool initializes with 50% of this value, then scales on-demand. | Reduce to `3-5` for low-resource environments (e.g., local dev). Increase to `20-30` for high-throughput production. Initial pool will be half of this value. |
 
 ---
 

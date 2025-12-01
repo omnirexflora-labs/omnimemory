@@ -209,10 +209,10 @@ class SynthesisAgent:
             Dict containing consolidated_memory and synthesis_summary strings.
         """
         try:
-            logger.info(
-                f"Synthesis agent input: {new_memory.get('natural_memory_note', '')}"
+            logger.debug(
+                f"Synthesis agent input: {new_memory.get('natural_memory_note', '')[:150]}..."
             )
-            logger.info(f"Existing memories: {existing_memories}")
+            logger.debug(f"Existing memories: {existing_memories[:150]}...")
             synthesis_input = {
                 "new_memory": {
                     "natural_memory_note": new_memory.get("natural_memory_note", ""),
