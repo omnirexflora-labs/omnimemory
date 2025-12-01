@@ -47,15 +47,56 @@ async def test_create_handler_exception_returns_none(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_initialize_pool_creates_initial_handlers(monkeypatch):
+async def test_initialize_pool_creates_half_of_max_connections(monkeypatch):
+    """Test that pool initializes with 50% of max_connections."""
     handler = Mock(enabled=True)
     _patch_handler_factory(monkeypatch, handler)
-    pool = VectorDBHandlerPool(max_connections=4)
+    pool = VectorDBHandlerPool(max_connections=10)
     await pool.initialize_pool(Mock())
-    assert pool._pool.qsize() == 2
-    assert pool._created_handlers == 2
+    # Should create 5 handlers (50% of 10)
+    assert pool._pool.qsize() == 5
+    assert pool._created_handlers == 5
     assert pool._initialized is True
     assert pool._pool_lock is not None
+
+
+@pytest.mark.asyncio
+async def test_initialize_pool_with_small_max_connections(monkeypatch):
+    """Test that pool creates at least 1 handler even with max_connections=1."""
+    handler = Mock(enabled=True)
+    _patch_handler_factory(monkeypatch, handler)
+    pool = VectorDBHandlerPool(max_connections=1)
+    await pool.initialize_pool(Mock())
+    # Should create 1 handler (max(1, 1//2) = 1)
+    assert pool._pool.qsize() == 1
+    assert pool._created_handlers == 1
+    assert pool._initialized is True
+
+
+@pytest.mark.asyncio
+async def test_initialize_pool_with_max_connections_2(monkeypatch):
+    """Test that pool creates 1 handler when max_connections=2."""
+    handler = Mock(enabled=True)
+    _patch_handler_factory(monkeypatch, handler)
+    pool = VectorDBHandlerPool(max_connections=2)
+    await pool.initialize_pool(Mock())
+    # Should create 1 handler (max(1, 2//2) = 1)
+    assert pool._pool.qsize() == 1
+    assert pool._created_handlers == 1
+    assert pool._initialized is True
+
+
+@pytest.mark.asyncio
+async def test_initialize_pool_with_large_max_connections(monkeypatch):
+    """Test that pool scales initialization with large max_connections."""
+    handler = Mock(enabled=True)
+    _patch_handler_factory(monkeypatch, handler)
+    pool = VectorDBHandlerPool(max_connections=30)
+    await pool.initialize_pool(Mock())
+    # Should create 15 handlers (50% of 30)
+    assert pool._pool.qsize() == 15
+    assert pool._created_handlers == 15
+    assert pool._initialized is True
 
 
 @pytest.mark.asyncio
@@ -285,13 +326,13 @@ async def test_get_pool_stats_before_initialization():
 async def test_get_pool_stats_after_initialization(monkeypatch):
     handler = Mock(enabled=True)
     _patch_handler_factory(monkeypatch, handler)
-    pool = VectorDBHandlerPool(max_connections=2)
+    pool = VectorDBHandlerPool(max_connections=10)
     await pool.initialize_pool(Mock())
 
     stats = await pool.get_pool_stats()
     assert stats["initialized"] is True
-    assert stats["created_handlers"] == 2
-    assert stats["available_handlers"] == 2
+    assert stats["created_handlers"] == 5  # 50% of 10
+    assert stats["available_handlers"] == 5
 
 
 @pytest.mark.asyncio

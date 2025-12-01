@@ -1642,7 +1642,7 @@ class MemoryManager:
                     )
                 ):
                     logger.info(
-                        f"Processing candidate {i} with score {score} and metadata {metadata}"
+                        f"Processing candidate {i} with score {score}"
                     )
                     if score >= threshold:
                         composite_score = calculate_composite_score(

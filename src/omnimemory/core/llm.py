@@ -483,13 +483,13 @@ class LLMConnection:
             if provider == "cohere" and not input_type:
                 params["input_type"] = "search_document"
 
-            if provider == "openai":
-                model_name = self.embedding_config.get("model", "").lower()
-                if (
-                    "text-embedding-3" in model_name
-                    or "text-embedding-small-3" in model_name
-                ):
-                    params.pop("dimensions", None)
+            # if provider == "openai":
+            #     model_name = self.embedding_config.get("model", "").lower()
+            #     if (
+            #         "text-embedding-3" in model_name
+            #         or "text-embedding-small-3" in model_name
+            #     ):
+            #         params.pop("dimensions", None)
 
             litellm.drop_params = True
 
@@ -561,13 +561,13 @@ class LLMConnection:
             if provider == "cohere" and not input_type:
                 params["input_type"] = "search_document"
 
-            if provider == "openai":
-                model_name = self.embedding_config.get("model", "").lower()
-                if (
-                    "text-embedding-3" in model_name
-                    or "text-embedding-small-3" in model_name
-                ):
-                    params.pop("dimensions", None)
+            # if provider == "openai":
+            #     model_name = self.embedding_config.get("model", "").lower()
+            #     if (
+            #         "text-embedding-3" in model_name
+            #         or "text-embedding-small-3" in model_name
+            #     ):
+            #         params.pop("dimensions", None)
 
             litellm.drop_params = True
 
