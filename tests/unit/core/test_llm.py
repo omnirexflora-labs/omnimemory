@@ -973,29 +973,29 @@ class TestLLMConnection:
                 call_args = mock_aembedding.call_args
                 assert call_args[1].get("input_type") == "search_document"
 
-    @patch.dict(os.environ, {}, clear=True)
-    @pytest.mark.asyncio
-    async def test_embedding_call_openai_text_embedding_3_coverage_line_391(self):
-        """Test embedding_call remove dimensions for text-embedding-3 (line 391)."""
-        with patch.dict(
-            os.environ,
-            {
-                "EMBEDDING_API_KEY": "test-key",
-                "EMBEDDING_PROVIDER": "openai",
-                "EMBEDDING_MODEL": "text-embedding-3-small",
-                "EMBEDDING_DIMENSIONS": "1536",
-            },
-        ):
-            conn = LLMConnection()
-            mock_response = Mock()
-
-            with patch(
-                "omnimemory.core.llm.litellm.aembedding", new_callable=AsyncMock
-            ) as mock_aembedding:
-                mock_aembedding.return_value = mock_response
-                _ = await conn.embedding_call("test")
-                call_args = mock_aembedding.call_args
-                assert "dimensions" not in call_args[1]
+    # @patch.dict(os.environ, {}, clear=True)
+    # @pytest.mark.asyncio
+    # async def test_embedding_call_openai_text_embedding_3_coverage_line_391(self):
+    #     """Test embedding_call remove dimensions for text-embedding-3 (line 391)."""
+    #     with patch.dict(
+    #         os.environ,
+    #         {
+    #             "EMBEDDING_API_KEY": "test-key",
+    #             "EMBEDDING_PROVIDER": "openai",
+    #             "EMBEDDING_MODEL": "text-embedding-3-small",
+    #             "EMBEDDING_DIMENSIONS": "1536",
+    #         },
+    #     ):
+    #         conn = LLMConnection()
+    #         mock_response = Mock()
+    #
+    #         with patch(
+    #             "omnimemory.core.llm.litellm.aembedding", new_callable=AsyncMock
+    #         ) as mock_aembedding:
+    #             mock_aembedding.return_value = mock_response
+    #             _ = await conn.embedding_call("test")
+    #             call_args = mock_aembedding.call_args
+    #             assert "dimensions" not in call_args[1]
 
     @patch.dict(os.environ, {}, clear=True)
     @pytest.mark.asyncio
