@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Coverage](https://img.shields.io/badge/coverage-89.58%25-green)](https://github.com/omnirexflora-labs/omnimemory)
+[![Coverage](https://img.shields.io/badge/coverage-87.69%25-green)](https://github.com/omnirexflora-labs/omnimemory)
 
 **Don't just store data. Synthesize memories.**
 OmniMemory transforms static embeddings into a self-evolving cognitive substrate.
